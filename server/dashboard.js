@@ -47,6 +47,19 @@ ${NAV_CSS}
   .who { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-weight:600; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 2px var(--surface); }
   .off { opacity:.42; }
+  /* liveness ring around the identity dot: fresh / slow / silent */
+  .live { display:inline-flex; align-items:center; gap:5px; }
+  .beat { width:7px; height:7px; border-radius:50%; flex:none; }
+  .beat.fresh { background:var(--good); }
+  .beat.slow  { background:var(--warning); }
+  .beat.cold  { background:var(--critical); }
+  .beat.gone  { background:var(--muted); }
+  .digest { border-left:2px solid var(--series-1); padding:2px 0 2px 12px; margin-bottom:12px; }
+  .digest b { font-family:var(--mono); font-size:12px; color:var(--series-1); }
+  .digest ul { margin:4px 0 0; padding-left:18px; }
+  .digest li { font-size:12.5px; color:var(--ink-2); margin-bottom:2px; }
+  .reply { font-size:11px; font-family:var(--mono); color:var(--muted);
+           border-left:2px solid var(--line); padding-left:7px; margin-bottom:3px; }
 
   /* progress meter: thin, rounded data-end, anchored left */
   .meter { height:7px; background:var(--track); border-radius:4px; overflow:hidden; margin:8px 0 4px; }
@@ -67,6 +80,9 @@ ${NAV_CSS}
   td { padding:9px 10px 9px 0; border-bottom:1px solid var(--line); vertical-align:top; }
   tr:last-child td { border-bottom:0; }
   .scroll { overflow-x:auto; }
+  #files { max-height:460px; overflow-y:auto; }
+  #files table { min-width:720px; }
+  #files thead th { position:sticky; top:0; background:var(--surface); z-index:1; }
   .path { font-family:var(--mono); font-size:12.5px; word-break:break-all; }
 
   .alert { border:1px solid var(--critical); background:color-mix(in srgb, var(--critical) 10%, transparent);
@@ -99,12 +115,14 @@ ${NAV_CSS}
     <section><h2>Task board</h2><div class="pane" id="tasks"></div></section>
     <section><h2>Findings</h2><div class="pane" id="findings"></div></section>
   </div>
-  <section style="margin-top:18px"><h2>File coverage — the shared brain</h2><div class="scroll" id="files"></div>
+  <section style="margin-top:18px"><h2>File coverage — the shared brain</h2><div class="scroll pane" id="files"></div>
     <div class="legend">
       <span>✓ clean</span><span>◐ partial</span><span>▲ suspicious</span>
       <span>✕ vulnerable</span><span>– skipped</span><span>‖ reviewers disagree</span>
     </div>
   </section>
+  <section><h2>Digest <span style="text-transform:none;letter-spacing:0">· what actually got decided</span></h2>
+    <div id="digest"></div></section>
   <section><h2>Traffic <span style="text-transform:none;letter-spacing:0">· times UTC−3</span></h2>
     <div class="pane" id="messages"></div></section>
 </div>
@@ -256,10 +274,23 @@ async function tick() {
 
   // Name, what they are doing right now, and when they last spoke. Role and
   // scope are standing facts, not activity — they live on the board tool.
+  const beatOf = (a) => {
+    if (!a.lastSeen) return ['gone', 'never checked in'];
+    const mins = (Date.now() - a.lastSeen) / 60000;
+    if (mins < 5) return ['fresh', 'active'];
+    if (mins < 15) return ['slow', 'quiet ' + Math.round(mins) + 'm'];
+    return ['cold', 'silent ' + Math.round(mins) + 'm'];
+  };
   fill(el('agents'), agents, (a) => {
     const up = Date.now() - (a.lastSeen || 0) < 90000;
+    const [beat, beatLabel] = beatOf(a);
+    const statusMins = a.statusAt ? Math.round((Date.now() - a.statusAt) / 60000) : null;
     return who(a.name, up)
-      + '<div class="ink2" style="font-size:13px;margin-top:3px">' + esc(a.status || 'idle') + '</div>'
+      + ' <span class="live"><span class="beat ' + beat + '"></span>'
+      + '<span class="muted">' + esc(beatLabel) + '</span></span>'
+      + '<div class="ink2" style="font-size:13px;margin-top:3px">' + esc(a.status || 'idle')
+      + (statusMins !== null && statusMins >= 5
+          ? ' <span class="muted">(said ' + statusMins + 'm ago)</span>' : '') + '</div>'
       + '<div class="muted">' + (up
           ? 'online · seen ' + ago(a.lastSeen)
           : 'last seen ' + ago(a.lastSeen) + (a.lastSeen ? ' · ' + onDay(a.lastSeen) + at(a.lastSeen) : '')) + '</div>';
@@ -301,10 +332,18 @@ async function tick() {
       + '</tbody></table>'
     : '<div class="empty">No files recorded yet — agents log them with the <code>file_review</code> tool.</div>';
 
+  const digests = [...(s.digests || [])].reverse();
+  el('digest').innerHTML = digests.length
+    ? digests.slice(0, 4).map((d) => '<div class="digest"><b>' + esc(d.id) + '</b> '
+        + '<span class="muted">' + esc(at(d.ts)) + ' · ' + esc(ago(d.ts)) + '</span>'
+        + '<ul>' + d.lines.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul></div>').join('')
+    : '<div class="empty">No digest yet — one is written every 20 messages or 15 minutes of activity.</div>';
+
   fill(el('messages'), (s.messages || []).slice(-40).reverse(), (m) =>
     '<span class="mono">' + esc(onDay(m.ts) + at(m.ts)) + '</span>'
     + '<span class="muted"> ' + esc(ago(m.ts)) + '</span>  ' + who(m.from)
     + '<span class="muted"> → ' + esc(m.to) + '</span>' + (m.urgent ? ' ' + pill('vulnerable', 'urgent') : '')
+    + (m.replyTo ? '<div class="reply">re: ' + esc(m.replyTo) + '</div>' : '')
     + '<div class="ink2" style="margin-top:2px">' + esc(m.text) + '</div>');
 }
 tick();

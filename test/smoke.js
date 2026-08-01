@@ -124,6 +124,17 @@ check('references are re-pointed at the new id', healed.state.tasks[0].goal === 
 check('sound ids are left alone', healed.state.tasks[1].id === 'T2');
 check('the counter continues past ids already in use', healed.state.counters.task >= 2);
 check('goal progress works again after healing', healed.goals()[0].done === 1);
+const unseq = `${process.env.TMPDIR || '/tmp'}/bros-unseq-${process.pid}.json`;
+(await import('node:fs')).writeFileSync(unseq, JSON.stringify({
+  room: 'unseq', agents: {}, counters: { message: 2 },
+  messages: [{ id: 'M1', from: 'a', to: 'all', text: 'one', ts: new Date().toISOString(), readBy: {} },
+             { id: 'M2', from: 'a', to: 'all', text: 'two', ts: new Date().toISOString(), readBy: {} }],
+  tasks: [], findings: [], goals: [], files: {}, env: {}, log: [], aliases: [], digests: [],
+}));
+const seqd = new Room({ name: 'unseq', file: unseq });
+check('history written before sequencing gets numbered', seqd.state.messages.every((m) => Number.isFinite(m.seq)));
+check('the sequence counter continues from the history', seqd.state.counters.seq === 2);
+(await import('node:fs')).unlinkSync(unseq);
 (await import('node:fs')).unlinkSync(older);
 
 console.log('\n  join briefing');
@@ -315,6 +326,7 @@ check('a second machine cannot take a live name', !stolen2.ok && stolen2.error.i
 check('the refusal says what to do', stolen2.error.includes('different --as name'));
 room.state.agents.zulu.lastSeen = Date.now() - 45 * 60_000;
 check('the name frees up once that machine goes quiet', room.join('zulu', { host: '10.0.0.2' }).ok);
+room.state.agents.zulu.hosts = ['10.0.0.2'];  // tidy up the deliberate collision
 
 console.log('\n  digest');
 for (let i = 0; i < 22; i += 1) await call('beta', 'send', { text: `digest filler ${i}` });
@@ -333,7 +345,10 @@ check('agents are warned in the board tool output',
   warned.text.includes('WARNING') && warned.text.includes('192.168.15.31'));
 check('the warning names the fix', warned.text.includes('--as name'));
 room.state.agents.alpha.hosts = ['relay-host'];
-check('clearing the extra host clears the warning', !(await call('alpha', 'board')).text.includes('WARNING'));
+const afterClear = await call('alpha', 'board');
+check('clearing the extra host clears that agent\'s warning',
+  !afterClear.text.includes('the name "alpha" is in use'),
+  afterClear.text.split('\n').find((l) => l.includes('WARNING')) || '');
 
 console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);

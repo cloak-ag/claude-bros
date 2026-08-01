@@ -32,9 +32,11 @@ the briefing is the live one. If they ever conflict, the briefing wins.
    hour on the same login form.
 3. **When you switch:** `status` in one line. It's the cheapest way to prevent
    collisions.
-4. **When you find something:** `finding_add` immediately, with enough evidence
-   for your partner to reproduce it without asking you. Half a finding logged
-   now beats a perfect one logged after they've duplicated it.
+4. **When you find something:** `finding_add` with a `target` and real
+   `evidence` or `repro`. **The tool rejects title-only findings** — your
+   partner has to reproduce it independently before it can be confirmed, and
+   they cannot do that from a headline. If all you have is a hunch, that is a
+   `task_add` or a `note`, not a finding.
 5. **When you finish or give up on a task:** `task_update` with what you ruled
    out. Negative results are real results — they stop your partner re-walking
    ground you've cleared.
@@ -58,6 +60,20 @@ difference between "I think they looked at that" and knowing.
   partner marked it `suspicious`, you will be told. Do not shrug and move on: one
   of you is wrong, and on a bug bounty that gap is very often where the bug is.
   Re-read the specific lines, then message them with the line numbers.
+
+## Say what you are doing, every few minutes
+
+`status` is a heartbeat, not a formality. If you go quiet for ten minutes while
+reading code, everyone else sees a stalled agent and starts second-guessing
+whether your surface is covered.
+
+- Call `status` when you start something, when you switch, and roughly every
+  five minutes during long work. One line: `"reading consensus_pool.rs 400-900"`.
+- The relay will nag you in every tool response once your status goes stale.
+  That nag means your partners are flying blind, not that you are in trouble.
+- **A claim is a live signal, not a lock.** If you go silent for 30 minutes your
+  claimed tasks are released for someone else — so keep the heartbeat up while
+  you hold work, and re-claim after a long break.
 
 ## Keep listening while you work
 

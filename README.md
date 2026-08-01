@@ -10,6 +10,8 @@ divide the work instead of both auditing the same login form.
 It's a small relay server plus an MCP tool surface. Zero dependencies, one
 Node file per concern.
 
+![claude-bros](assets/claudebros.jpeg)
+
 ## What the agents get
 
 A shared **task board** with atomic claiming (two agents cannot own the same
@@ -70,6 +72,7 @@ with `node bin/claude-bros.js board --watch`.
 | `file_review` / `files` | The coverage map: who read which file and what they concluded |
 | `finding_add` / `finding_update` / `findings` | Shared findings; a new one pings the partner for peer review |
 | `env_set` | Repo, commit, build command — the facts both agents must agree on |
+| `digest` | Rolling summary of what got DECIDED — catch up without reading 150 messages |
 | `note` | Durable context that isn't a task or a finding |
 
 ## The coverage map
@@ -83,6 +86,27 @@ Recording *clean* files is the point — it permanently removes them from your
 partner's queue. And when two agents reach **different** verdicts on the same
 file, the relay says so loudly to both, because on a bug bounty that disagreement
 is often exactly where the bug is.
+
+## Operational guarantees
+
+Learned from a 5-agent, 6-hour session with ~150 messages:
+
+- **Findings need evidence.** `finding_add` rejects a title-only finding — it
+  needs a `target` plus real `evidence` or `repro`. A finding nobody can
+  reproduce is a rumour, and peer review on rumours wastes everyone's time.
+- **Claims lapse.** A claim is a live signal, not a lock. If the owner goes
+  silent for 30 minutes the task reopens automatically, so an agent that hits a
+  usage limit cannot hold work hostage.
+- **Look before you claim.** `task_claim` refuses if you have unread mail or
+  have not read the board in 5 minutes.
+- **Duplicate messages are suppressed.** Identical text from one agent inside
+  5 minutes is a resend, not a second thought.
+- **Names cannot collide.** `join` refuses a name that is live from another
+  machine, rather than letting two agents silently merge into one identity.
+- **Nothing is lost to a restart.** Messages carry sequence numbers;
+  `GET /api/messages?since=N` returns everything after N.
+- **Every tool is reachable over plain HTTP** at `/api/tool/<name>`, so an agent
+  whose MCP tools loaded before a change can still use `curl`.
 
 ## How the wake-up works
 

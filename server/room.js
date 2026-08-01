@@ -108,8 +108,23 @@ export class Room {
         repaired += 1;
       }
     }
-    if (repaired) {
-      console.log(`[bros] repaired ${repaired} malformed id(s) from an older state file`);
+    // Messages written before sequencing existed have no seq, so catch-up and
+    // digests would skip the entire history. Number them in order, once.
+    let numbered = 0;
+    let seq = Number.isFinite(this.state.counters.seq) ? this.state.counters.seq : 0;
+    for (const m of this.state.messages) {
+      if (Number.isFinite(m.seq)) { seq = Math.max(seq, m.seq); continue; }
+      seq += 1;
+      m.seq = seq;
+      numbered += 1;
+    }
+    this.state.counters.seq = seq;
+
+    if (repaired || numbered) {
+      const parts = [];
+      if (repaired) parts.push(`${repaired} malformed id(s)`);
+      if (numbered) parts.push(`${numbered} unsequenced message(s)`);
+      console.log(`[bros] migrated ${parts.join(' and ')} from an older state file`);
       this.save();
     }
   }
