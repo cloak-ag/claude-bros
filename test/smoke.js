@@ -306,6 +306,27 @@ check('the task is open again', room.task(lapsed).status === 'open');
 check('who held it is remembered', room.task(lapsed).lastOwner === 'beta');
 room.state.agents.beta.lastSeen = Date.now();
 
+console.log('\n  claims lapse on any glance, not just board/claim');
+const dashLapse = await newTask('beta', { title: 'lapsed by a plain state read' });
+await call('beta', 'inbox'); await call('beta', 'board');
+await call('beta', 'task_claim', { id: dashLapse });
+room.state.agents.beta.lastSeen = Date.now() - 40 * 60_000;
+await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
+check('a dashboard state read lapses a stale claim', room.task(dashLapse).status === 'open');
+room.state.agents.beta.lastSeen = Date.now();
+
+console.log('\n  claim window is tunable via env');
+const winTask = await newTask('beta', { title: 'short-window claim' });
+await call('beta', 'inbox'); await call('beta', 'board');
+await call('beta', 'task_claim', { id: winTask });
+room.state.agents.beta.lastSeen = Date.now() - 7 * 60_000;
+const prevWin = process.env.BROS_CLAIM_STALE_MS;
+process.env.BROS_CLAIM_STALE_MS = '6000';
+const releasedWin = room.releaseStaleClaims();
+if (prevWin === undefined) delete process.env.BROS_CLAIM_STALE_MS; else process.env.BROS_CLAIM_STALE_MS = prevWin;
+check('a 6-second window releases a 7-minute-silent owner', releasedWin.includes(winTask));
+room.state.agents.beta.lastSeen = Date.now();
+
 console.log('\n  message dedup, sequencing, threading');
 const first = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
 const again = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
@@ -345,14 +366,17 @@ check('agents are warned in the board tool output',
   warned.text.includes('WARNING') && warned.text.includes('192.168.15.31'));
 check('the warning names the fix', warned.text.includes('--as name'));
 room.state.agents.alpha.hosts = ['relay-host'];
-const afterClear = await call('alpha', 'board');
-check('clearing the extra host clears that agent\'s warning',
-  !afterClear.text.includes('the name "alpha" is in use'),
-  afterClear.text.split('\n').find((l) => l.includes('WARNING')) || '');
+// zulu picked up a second host ('relay-host' from its join call, then the fake
+// one in the collision test) — clear it or the board keeps warning about zulu.
+room.state.agents.zulu.hosts = ['relay-host'];
+check('clearing the extra host clears the warning', !(await call('alpha', 'board')).text.includes('WARNING'));
 
 console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
-check('dashboard renders', page.status === 200 && (await page.text()).includes('claude-bros'));
+const pageText = await page.text();
+check('dashboard renders', page.status === 200 && pageText.includes('claude-bros'));
+check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
+check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 
 server.close();
 console.log(`\n  ${failed ? '\x1b[31m' : '\x1b[32m'}${passed} passed, ${failed} failed\x1b[0m\n`);

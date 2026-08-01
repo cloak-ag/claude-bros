@@ -3,7 +3,8 @@ import path from 'node:path';
 
 const ONLINE_WINDOW_MS = 90_000;
 const STATUS_STALE_MS = 5 * 60_000;      // a status older than this is not "what they are doing"
-const CLAIM_STALE_MS = 30 * 60_000;      // an owner silent this long no longer holds their claim
+// an owner silent this long no longer holds their claim — tunable via BROS_CLAIM_STALE_MS (ms)
+const claimStaleMs = () => Number(process.env.BROS_CLAIM_STALE_MS) || 30 * 60_000;
 const DEDUP_WINDOW_MS = 5 * 60_000;      // identical text from one agent inside this window is a repeat
 const COLLISION_GRACE_MS = 30 * 60_000;  // a name is free again once its machine has been silent this long
 const DIGEST_EVERY_MESSAGES = 20;
@@ -344,7 +345,7 @@ export class Room {
       if (task.status !== 'claimed' || !task.owner) continue;
       const owner = this.state.agents[task.owner];
       const quiet = Date.now() - (owner?.lastSeen || 0);
-      if (quiet < CLAIM_STALE_MS) continue;
+      if (quiet < claimStaleMs()) continue;
       task.history.push({ ts: nowIso(), who: 'system', what: `claim lapsed — ${task.owner} silent ${Math.round(quiet / 60000)} min` });
       task.lastOwner = task.owner;
       task.owner = null;
@@ -370,7 +371,7 @@ export class Room {
       return {
         ok: false,
         error: `${id} is being worked by ${task.owner} (last active ${quiet} min ago). Pick another one — `
-          + `it frees up automatically after 30 min of their silence.`,
+          + `it frees up automatically after ${Math.round(claimStaleMs() / 60000)} min of their silence.`,
         task,
       };
     }

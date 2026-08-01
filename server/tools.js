@@ -470,9 +470,16 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   const withNag = (result) => {
     if (!result.content?.[0]) return result;
     if (staleStatus && !unbriefed) {
-      const mins = Math.round((Date.now() - (room.state.agents[agent].statusAt || 0)) / 60000);
+      // Seconds-granular liveness so the agent can see exactly how long it has
+      // looked dead to the team, not just "a while".
+      const rec = room.state.agents[agent];
+      const statusAt = rec.statusAt || 0;
+      const lastAgo = rec.lastSeen ? Math.max(0, Math.floor((Date.now() - rec.lastSeen) / 1000)) : null;
+      const agoTxt = !statusAt ? 'never set'
+        : (Date.now() - statusAt) < 60_000 ? `${Math.floor((Date.now() - statusAt) / 1000)}s old`
+          : `${Math.floor((Date.now() - statusAt) / 60000)} min old`;
       result.content[0].text =
-        `[heartbeat] Your status is ${Number.isFinite(mins) && mins < 10000 ? `${mins} min old` : 'never set'} — ` +
+        `[heartbeat] Your status is ${agoTxt} and your last activity was ${lastAgo == null ? 'never recorded' : `${lastAgo}s ago`} — ` +
         'to everyone else you look stalled. Call `status` with one line on what you are doing right now, ' +
         'and keep doing it every few minutes.\n\n' + result.content[0].text;
     }

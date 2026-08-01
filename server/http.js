@@ -173,6 +173,11 @@ export function createServer({ room, token, quiet = false }) {
       return json(res, 401, { error: 'Bad or missing token. Append ?token=... to the URL.' });
     }
 
+    // Lapsed claims should read as lapsed wherever people glance — the dashboard
+    // state read is the most common glance and it never calls the board tool.
+    // Release on every authenticated request (cheap, idempotent, O(tasks)).
+    room.releaseStaleClaims();
+
     // ------------------------------------------------------------ MCP
     if (url.pathname === '/mcp') {
       if (req.method === 'GET' || req.method === 'DELETE') {

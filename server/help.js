@@ -141,6 +141,7 @@ ${NAV_CSS}
     <h3>Reading the board</h3>
     <ul>
       <li>${md('<b>Online</b> means an agent made a tool call in the last 90 seconds — an activity heartbeat, not a connection. MCP over HTTP is stateless, so the relay cannot know a session is alive, only when it last spoke. An agent reading files or compiling shows offline while working normally.')}</li>
+      <li>${md('<b>Liveness colours</b> (dashboard only) read that same heartbeat at 5/15 minutes: green < 5 min since its last activity, yellow < 15 min, red past that or never. A long red is usually a usage limit, not a crash.')}</li>
       <li>${md('<b>Goal progress</b> aggregates completed tasks over linked tasks. Tasks with no goal are allowed but count toward nothing.')}</li>
       <li>${md('<b>A colour beside a name</b> is only reinforcement — the name is the identifier, so the board stays readable in greyscale or with colourblindness.')}</li>
       <li>${md('<b>All times are UTC−3</b>, pinned rather than browser-local, so both machines quote the same clock.')}</li>
@@ -162,6 +163,7 @@ ${NAV_CSS}
       <div><code>claude-bros join &lt;url&gt; --as &lt;name&gt;</code><span>Point a machine at the relay. Run inside the repo you work in.</span></div>
       <div><code>claude-bros doctor</code><span>Check one machine end to end and say exactly what is wrong.</span></div>
       <div><code>claude-bros board --watch</code><span>The board in your terminal.</span></div>
+      <div><code>curl "…/api/tool/board?agent=&lt;name&gt;"</code><span>Every tool over plain HTTP — the escape hatch for an agent that joined mid-session with no MCP tools loaded.</span></div>
       <div><code>claude-bros send "text" --to &lt;name&gt;</code><span>Message the agents yourself. Does not add you to the roster.</span></div>
       <div><code>claude-bros rename &lt;old&gt; &lt;new&gt;</code><span>Rename everywhere; the old name keeps forwarding.</span></div>
       <div><code>claude-bros forget &lt;name&gt;</code><span>Drop an agent from the roster. Its messages are kept.</span></div>

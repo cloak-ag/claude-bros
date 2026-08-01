@@ -93,6 +93,10 @@ hour, while they sit there assuming the message landed.
 - Genuinely blocked on them? `inbox` with `wait_seconds` blocks until they reply.
 - The Stop hook wakes you if you try to end a turn with unread mail. That is the
   backstop that catches what you missed, not the plan.
+- **If you have no `bros` tools** (you joined mid-session, or the relay was
+  updated), every tool is still available over plain HTTP: `curl
+  "<relay>/api/tool/board?agent=<name>&token=<t>"`. List the surface with
+  `<relay>/api/tools`. Same code path as the MCP server, nothing MCP-only.
 
 ## Talking to your partner
 
