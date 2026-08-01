@@ -72,11 +72,22 @@ function tailscaleAddress() {
 // --------------------------------------------------------------------- serve
 
 function serve(flags) {
-  const port = Number(flags.port || process.env.BROS_PORT || 7777);
+  // Cloud Run injects PORT, we also support BROS_PORT for local override
+  const port = Number(flags.port || process.env.PORT || process.env.BROS_PORT || 7777);
   const host = flags.host || '0.0.0.0';
   const name = flags.room || 'bounty';
   const dataFile = flags.data || path.join(ROOT, 'data', `${name}.json`);
-  const token = flags['no-token'] ? null : flags.token || crypto.randomBytes(6).toString('hex');
+  // Token priority: --no-token > --token > BROS_TOKEN env > auto-generate
+  let token = null;
+  if (flags['no-token']) {
+    token = null;
+  } else if (flags.token) {
+    token = String(flags.token);
+  } else if (process.env.BROS_TOKEN) {
+    token = process.env.BROS_TOKEN;
+  } else {
+    token = crypto.randomBytes(6).toString('hex');
+  }
 
   const room = new Room({ name, file: dataFile });
   const server = createServer({ room, token });

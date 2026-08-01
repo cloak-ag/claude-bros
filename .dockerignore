@@ -1,0 +1,12 @@
+# Ignore everything not needed for the container
+.git
+.github
+node_modules
+data
+*.json
+!package*.json
+*.md
+!templates/*.md
+test
+*.log
+.DS_Store

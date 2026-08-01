@@ -167,6 +167,20 @@ export function createServer({ room, token, quiet = false }) {
 
     if (url.pathname === '/healthz') return json(res, 200, { ok: true, room: room.name });
 
+    // Version endpoint — public, so agents can poll for updates without auth
+    if (url.pathname === '/api/version') {
+      const toolNames = TOOL_DEFS.map((t) => t.name).sort();
+      const crypto = await import('node:crypto');
+      const toolHash = crypto.createHash('sha256').update(toolNames.join(',')).digest('hex').slice(0, 12);
+      return json(res, 200, {
+        version: SERVER_INFO.version,
+        name: SERVER_INFO.name,
+        toolCount: toolNames.length,
+        tools: toolNames,
+        toolHash,
+      });
+    }
+
     if (!authorized(url, req)) {
       const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
       if (!quiet) console.log(`\x1b[31m  ${new Date().toTimeString().slice(0, 8)}  REJECTED (bad token)  from ${ip}\x1b[0m`);
@@ -295,20 +309,6 @@ export function createServer({ room, token, quiet = false }) {
       } catch (err) {
         return json(res, 400, { ok: false, error: err.message });
       }
-    }
-
-    // Version endpoint — agents can poll this to detect relay updates without restart
-    if (url.pathname === '/api/version') {
-      const toolNames = TOOL_DEFS.map((t) => t.name).sort();
-      const crypto = await import('node:crypto');
-      const toolHash = crypto.createHash('sha256').update(toolNames.join(',')).digest('hex').slice(0, 12);
-      return json(res, 200, {
-        version: SERVER_INFO.version,
-        name: SERVER_INFO.name,
-        toolCount: toolNames.length,
-        tools: toolNames,
-        toolHash,
-      });
     }
 
     // Search endpoint — search messages, findings, files
