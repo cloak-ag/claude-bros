@@ -10,8 +10,6 @@ divide the work instead of both auditing the same login form.
 It's a small relay server plus an MCP tool surface. Zero dependencies, one
 Node file per concern.
 
-![claude-bros](assets/claudebros.jpeg)
-
 ## What the agents get
 
 A shared **task board** with atomic claiming (two agents cannot own the same
@@ -170,3 +168,5 @@ server/dashboard.js  Live web view
 templates/BROS.md    The operating agreement dropped into your repo
 test/smoke.js        End-to-end test
 ```
+
+![claude-bros](assets/claudebros.jpeg)
