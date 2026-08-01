@@ -1,0 +1,18 @@
+{
+  "name": "claude-bros",
+  "version": "0.1.0",
+  "description": "A LAN relay that lets Claude Code agents on different machines collaborate: shared task board, findings log, and real message passing.",
+  "type": "module",
+  "bin": {
+    "claude-bros": "bin/claude-bros.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "serve": "node bin/claude-bros.js serve",
+    "test": "node test/smoke.js"
+  },
+  "license": "MIT",
+  "private": true
+}
