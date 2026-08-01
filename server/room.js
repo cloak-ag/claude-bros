@@ -242,6 +242,11 @@ export class Room {
     );
     if (repeat) return { ...repeat, duplicate: true };
 
+    // Detect @mentions in the text
+    const mentionMatch = text.match(/@([a-zA-Z0-9_-]+)/);
+    const mention = mentionMatch ? mentionMatch[1] : null;
+    const isMention = mention && mention in this.state.agents;
+
     this.state.counters.seq = (Number(this.state.counters.seq) || 0) + 1;
     const msg = {
       id: this.#id('message', 'M'),
@@ -249,8 +254,9 @@ export class Room {
       from,
       to,
       text,
-      urgent: Boolean(urgent),
+      urgent: Boolean(urgent) || isMention, // Mentions are treated as urgent
       replyTo: replyTo || null,
+      mention: isMention ? mention : null, // Store the mentioned agent
       ts: nowIso(),
       readBy: {},
     };
@@ -310,7 +316,7 @@ export class Room {
 
   // ----------------------------------------------------------------- tasks
 
-  addTask(from, { title, scope = '', notes = '', assignTo = '' }) {
+  addTask(from, { title, scope = '', notes = '', assignTo = '', dependsOn = '' }) {
     const task = {
       id: this.#id('task', 'T'),
       title,
@@ -323,6 +329,7 @@ export class Room {
       updatedAt: nowIso(),
       history: [{ ts: nowIso(), who: from, what: assignTo ? `created, assigned to ${assignTo}` : 'created' }],
     };
+    if (dependsOn) task.dependsOn = dependsOn;
     this.state.tasks.push(task);
     this.touch(from);
     this.save();
@@ -376,6 +383,21 @@ export class Room {
       };
     }
     if (task.status === 'done') return { ok: false, error: `${id} is already done.`, task };
+
+    // Check dependencies
+    if (task.dependsOn) {
+      const dep = this.task(task.dependsOn);
+      if (dep && dep.status !== 'done') {
+        task.status = 'blocked';
+        this.save();
+        return {
+          ok: false,
+          error: `${id} depends on ${task.dependsOn} (status: ${dep.status}). It will unblock when the dependency is done.`,
+          task,
+        };
+      }
+    }
+
     task.owner = agent;
     task.status = 'claimed';
     task.updatedAt = nowIso();
@@ -393,6 +415,17 @@ export class Room {
     task.updatedAt = nowIso();
     task.history.push({ ts: nowIso(), who: agent, what: `${status || 'note'}${notes ? `: ${notes}` : ''}` });
     this.touch(agent);
+
+    // If this task was completed, unblock any tasks depending on it
+    if (status === 'done') {
+      for (const t of this.state.tasks) {
+        if (t.dependsOn === id && t.status === 'blocked') {
+          t.status = 'open';
+          t.history.push({ ts: nowIso(), who: 'system', what: `unblocked — dependency ${id} completed` });
+        }
+      }
+    }
+
     this.save();
     return { ok: true, task };
   }
@@ -404,7 +437,7 @@ export class Room {
 
   // -------------------------------------------------------------- findings
 
-  addFinding(agent, { title, severity = 'info', target = '', evidence = '', repro = '' }) {
+  addFinding(agent, { title, severity = 'info', target = '', evidence = '', repro = '', createsTask = false }) {
     const finding = {
       id: this.#id('finding', 'F'),
       title,
@@ -420,6 +453,23 @@ export class Room {
     this.touch(agent);
     this.save();
     this.#wake();
+
+    // Auto-create a verification task for the partner
+    if (createsTask) {
+      // Find an agent who isn't the reporter
+      const partner = Object.keys(this.state.agents).find((a) => a !== agent);
+      const task = this.addTask(agent, {
+        title: `Verify ${finding.id}: ${title}`,
+        scope: 'peer review',
+        notes: `Auto-created from finding ${finding.id}. Independently reproduce: ${evidence || repro || 'see finding details.'}`,
+        assignTo: partner,
+        goal: finding.severity === 'critical' || finding.severity === 'high' ? undefined : undefined,
+      });
+      // Link finding to task
+      finding.verificationTask = task.id;
+      this.save();
+    }
+
     return finding;
   }
 
