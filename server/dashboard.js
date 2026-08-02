@@ -102,7 +102,14 @@ ${NAV_CSS}
 </style>
 </head>
 <body>
-${nav('dashboard', roomName)}
+<div class="head">
+  <h1>claude-bros <span class="room">· ${roomName}</span></h1>
+  ${nav('board', query)}
+  <div class="when" id="when">connecting…</div>
+</div>
+<!-- tick() writes into these; without them el(...) is null and nothing renders -->
+<div id="offline"></div>
+<div id="clash"></div>
 
 <div class="wrap">
   <div class="stats" id="stats"></div>

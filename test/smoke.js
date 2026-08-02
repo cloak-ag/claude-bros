@@ -462,6 +462,16 @@ console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
 const pageText = await page.text();
 check('dashboard renders', page.status === 200 && pageText.includes('claude-bros'));
+check('every element the dashboard script writes to exists in its markup', (() => {
+  // A missing container makes el(...) null, tick() throws on the first write,
+  // and the whole board renders blank — which is exactly what shipped once.
+  const targets = new Set([...pageText.matchAll(/el\('([a-z]+)'\)/g)].map((m) => m[1]));
+  const ids = new Set([...pageText.matchAll(/id="([a-z]+)"/g)].map((m) => m[1]));
+  return [...targets].every((t) => ids.has(t));
+})(), [...new Set([...pageText.matchAll(/el\('([a-z]+)'\)/g)].map((m) => m[1]))]
+  .filter((t) => !pageText.includes(`id="${t}"`)).join(', '));
+check('dashboard tab links carry the token and point at real routes',
+  /class="tab[^"]*" href="\/\?token=/.test(pageText) && /class="tab[^"]*" href="\/help\?token=/.test(pageText));
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 // Regression for the dashboard rewrite: esc() must actually escape (agent text is
