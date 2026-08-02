@@ -1,0 +1,5 @@
+# Changes to deployment automation or infrastructure require an independent
+# repository administrator who operates the legacy cutover path.
+/.github/ @vict0rcarvalh0
+/deploy/ @vict0rcarvalh0
+/GCP-DEPLOYMENT.md @vict0rcarvalh0
