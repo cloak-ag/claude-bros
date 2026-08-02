@@ -378,6 +378,48 @@ check('dashboard renders', page.status === 200 && pageText.includes('claude-bros
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 
+console.log('\n  CLI argument layer — the subcommand must not leak into args');
+// Regression for the argv split: `join <url>` must record the URL, not "join",
+// and `send "hello"` must send "hello", not "send hello".
+// NB: async spawn, not spawnSync — spawnSync blocks this process's event loop,
+// so the test relay here in this same process could never answer the child.
+const { spawn } = await import('node:child_process');
+const osMod = await import('node:os');
+const fsMod = await import('node:fs');
+const pathMod = await import('node:path');
+const cli = pathMod.join(import.meta.dirname, '..', 'bin', 'claude-bros.js');
+const runCli = (args, envHome) => new Promise((resolve) => {
+  const child = spawn('node', [cli, ...args], { env: { ...process.env, HOME: envHome } });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { err += d; });
+  child.on('close', (code) => resolve({ code, out, err }));
+});
+
+const sandbox = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-cli-'));
+const j = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox);
+let cliCfg = null;
+try {
+  cliCfg = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude-bros', 'config.json'), 'utf8'));
+} catch {}
+check('join records the real relay URL, not the command name',
+  cliCfg?.url === 'http://cli-test.invalid:7777', JSON.stringify(cliCfg));
+check('join still passes its --as and --token through', cliCfg?.agent === 'cliagent' && cliCfg?.token === 't');
+check('join exits cleanly even when the relay is unreachable', j.code === 0, j.out + j.err);
+
+const sendHome = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-send-'));
+fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });
+fsMod.writeFileSync(pathMod.join(sendHome, '.claude-bros', 'config.json'), JSON.stringify({
+  url: base, agent: 'clisender', token: TOKEN, role: '', scope: '',
+}));
+const s = await runCli(['send', 'hello-cli', '--to', 'alpha'], sendHome);
+const sentByCli = room.state.messages.find((m) => m.from === 'human' && m.text.includes('hello-cli'));
+check('send sends the exact text, no command name prepended',
+  s.code === 0 && sentByCli?.text === 'hello-cli', `${s.out} text=${sentByCli?.text}`);
+fsMod.rmSync(sandbox, { recursive: true, force: true });
+fsMod.rmSync(sendHome, { recursive: true, force: true });
+
 server.close();
 console.log(`\n  ${failed ? '\x1b[31m' : '\x1b[32m'}${passed} passed, ${failed} failed\x1b[0m\n`);
 process.exit(failed ? 1 : 0);
