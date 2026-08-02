@@ -125,9 +125,13 @@ ${nav('dashboard', roomName)}
 </div>
 
 <script>
-const q = location.search ? '&' + location.search.slice(1) : '';
+const token = new URLSearchParams(location.search).get('token');
+const q = token ? '?token=' + encodeURIComponent(token) : '';
 const el = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&','<':'<','>':'>','"':'"'}[c]));
+// Agent-supplied text flows through this into innerHTML — it must actually
+// escape, or any message/status/title on the board becomes stored XSS that
+// runs in the dashboard's origin and can read the relay token.
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fill = (node, items, render) => {
   node.innerHTML = items.length
     ? items.map((i) => '<div class="row">' + render(i) + '</div>').join('')

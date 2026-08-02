@@ -74,6 +74,19 @@ check('second agent is blocked from the same task',
 const done = await call('alpha', 'task_update', { id: 'T1', status: 'done', notes: 'tokens are 256-bit, ruled out' });
 check('task can be completed', done.text.includes('now done'));
 
+console.log('\n  task dependencies');
+// T1 is already done above — so a task depending on it must be claimable right away.
+await call('alpha', 'task_add', { title: 'Verify the password reset fix', depends_on: 'T1' });
+const depMet = await call('beta', 'task_claim', { id: 'T2' });
+check('a task whose dependency is done can be claimed', !depMet.isError, depMet.text);
+await call('alpha', 'task_add', { title: 'Exploit the password reset', scope: 'auth' });
+await call('alpha', 'task_add', { title: 'Write the advisory', depends_on: 'T3' });
+const depBlock = await call('beta', 'task_claim', { id: 'T4' });
+check('a task with an unfinished dependency is rejected as blocked',
+  depBlock.isError && depBlock.text.includes('depends on T3') && room.task('T4').status === 'blocked', depBlock.text);
+const depOpen = await call('alpha', 'task_update', { id: 'T3', status: 'done' });
+check('completing the dependency reopens the blocked task', room.task('T4').status === 'open', JSON.stringify(room.task('T4')));
+
 console.log('\n  messaging');
 await call('beta', 'send', { text: 'Found a reflected param on /search', to: 'alpha' });
 const inbox = await call('alpha', 'inbox');
@@ -82,6 +95,13 @@ check('messages are consumed once', (await call('alpha', 'inbox')).text.includes
 check('sender does not receive their own broadcast', (await call('beta', 'inbox')).text.includes('No unread'));
 const badTarget = await call('alpha', 'send', { text: 'hi', to: 'gamma' });
 check('sending to an unknown agent errors usefully', badTarget.isError && badTarget.text.includes('Known agents'));
+await call('alpha', 'send', { text: 'review my F1 @beta when you get a chance' });
+const mentioned = room.state.messages[room.state.messages.length - 1];
+check('@mention is recognised for a known agent', mentioned.mention === 'beta');
+check('an @mention is treated as urgent', mentioned.urgent === true);
+await call('alpha', 'send', { text: 'check @ghost-agent in scope' });
+const ghostMention = room.state.messages[room.state.messages.length - 1];
+check('@mention of an unknown name is not marked urgent', ghostMention.urgent === false && ghostMention.mention === null);
 
 console.log('\n  long-polling inbox');
 const started = Date.now();
@@ -103,6 +123,31 @@ check('a finding pings the partner for peer review', review.text.includes('F1') 
 await call('alpha', 'finding_update', { id: 'F1', status: 'confirmed', note: 'reproduced with a second account' });
 const findings = await call('beta', 'findings');
 check('peer confirmation is recorded', findings.text.includes('"status": "confirmed"'));
+
+console.log('\n  finding → task auto-link');
+await call('beta', 'finding_add', {
+  title: 'Stored XSS in the dashboard',
+  severity: 'high',
+  target: '/dashboard',
+  evidence: 'agent message text is injected unescaped',
+  creates_task: true,
+});
+const linkTask = room.state.tasks.find((t) => t.title.includes('Verify F2'));
+check('a finding with creates_task spawns a verification task', Boolean(linkTask), JSON.stringify(room.state.tasks));
+check('the verification task is assigned to the partner, not the reporter',
+  linkTask?.owner === 'alpha', `owner=${linkTask?.owner}`);
+check('the finding records its verification task', room.state.findings.find((f) => f.id === 'F2')?.verificationTask === linkTask?.id);
+
+console.log('\n  board search');
+const searchHit = await (await fetch(`${base}/api/search?q=idor&token=${TOKEN}`)).json();
+check('search finds the matching finding', searchHit.count >= 1 && searchHit.results.some((r) => r.type === 'finding' && r.id === 'F1'), JSON.stringify(searchHit));
+const searchAuth = await (await fetch(`${base}/api/search?q=idor`)).json();
+check('search requires the token', !searchAuth?.results);
+
+console.log('\n  relay version');
+const version = await (await fetch(`${base}/api/version`)).json();
+check('version endpoint is public', version.name === 'claude-bros' && Number.isInteger(version.toolCount));
+check('version exposes the tool surface', Array.isArray(version.tools) && version.tools.includes('finding_add'));
 
 console.log('\n  healing an older state file');
 const older = `${process.env.TMPDIR || '/tmp'}/bros-old-${process.pid}.json`;
@@ -377,6 +422,16 @@ const pageText = await page.text();
 check('dashboard renders', page.status === 200 && pageText.includes('claude-bros'));
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
+// Regression for the dashboard rewrite: esc() must actually escape (agent text is
+// injected into innerHTML) and the state fetch must build a real ?token= query.
+const escSource = pageText.match(/const esc =[^}]+}/)?.[0] || '';
+check('dashboard esc() actually escapes, no stored XSS',
+  escSource.includes("'&':'&amp;'") && escSource.includes("'<':'&lt;'"), escSource.slice(0, 80));
+const fetchSource = pageText.match(/const token =[^;]+;[^;]*;[^;]*;/)?.[0] || '';
+check('dashboard fetches state with a real token query',
+  pageText.includes("'?token=' + encodeURIComponent(token)") && !pageText.includes("'&' + location.search"), fetchSource.slice(0, 80));
+const stateFetch = await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
+check('the dashboard state endpoint is live', stateFetch.room === room.name);
 
 console.log('\n  CLI argument layer — the subcommand must not leak into args');
 // Regression for the argv split: `join <url>` must record the URL, not "join",
@@ -438,7 +493,7 @@ fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });
 fsMod.writeFileSync(pathMod.join(sendHome, '.claude-bros', 'config.json'), JSON.stringify({
   url: base, agent: 'clisender', token: TOKEN, role: '', scope: '',
 }));
-const s = await runCli(['send', 'hello-cli', '--to', 'alpha'], sendHome);
+const s = await runCli(['send', 'hello-cli', '--to', 'alpha'], sendHome, sendHome);
 const sentByCli = room.state.messages.find((m) => m.from === 'human' && m.text.includes('hello-cli'));
 check('send sends the exact text, no command name prepended',
   s.code === 0 && sentByCli?.text === 'hello-cli', `${s.out} text=${sentByCli?.text}`);
