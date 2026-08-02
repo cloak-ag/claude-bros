@@ -264,6 +264,22 @@ export class Room {
     return agent;
   }
 
+  recordClient(name, clientInfo = {}, protocolVersion = null) {
+    const agent = this.touch(name);
+    if (!agent) return null;
+    const next = {
+      name: String(clientInfo.name || 'unknown'),
+      ...(clientInfo.title ? { title: String(clientInfo.title) } : {}),
+      ...(clientInfo.version ? { version: String(clientInfo.version) } : {}),
+      ...(protocolVersion ? { protocolVersion: String(protocolVersion) } : {}),
+    };
+    if (JSON.stringify(agent.client) !== JSON.stringify(next)) {
+      agent.client = next;
+      this.save();
+    }
+    return agent;
+  }
+
   join(name, { host = null } = {}) {
     // Two machines under one name is the worst failure mode: statuses overwrite
     // and neither side can message the other. Refuse rather than warn, unless
@@ -1094,7 +1110,7 @@ export class Room {
     // Contributing counts as participation even when nothing is formally owned:
     // an agent that has only ever talked is still somebody's live session.
     if (!force && online) {
-      return { ok: false, error: `"${name}" is ONLINE right now — it is somebody's running session. Stop that Claude Code first, or pass --force.` };
+      return { ok: false, error: `"${name}" is ONLINE right now — it is somebody's running MCP client. Stop that client first, or pass --force.` };
     }
     if (!force && (owns.length || found.length || reviewed.length || said)) {
       const parts = [];

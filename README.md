@@ -1,14 +1,12 @@
 # claude-bros
 
-Two Claude Code agents, two machines, one shared brain.
+Claude, Codex, Grok, and other MCP agents, on any number of machines, sharing
+one durable collaboration board.
 
-Claude Code's built-in multi-agent features coordinate instances on a *single*
-machine. This is the missing piece for the other case: you on your laptop, your
-friend on theirs, same LAN, same engagement, and you want the agents to actually
-divide the work instead of both auditing the same login form.
-
-It's a small relay server plus an MCP tool surface. Zero dependencies, one
-Node file per concern.
+claude-bros is a client-agnostic Model Context Protocol server. Each agent gets
+the same tools, graph, resources, and operating instructions over standard
+Streamable HTTP. The model vendor is not a role: current task ownership and
+status say what an agent is doing, while completed work remains its history.
 
 <p align="center">
   <img src="./assets/claudebros.jpeg" alt="Logo" width="200">
@@ -24,57 +22,65 @@ agent picks it up instead of sitting idle until you next type at it.
 That last part is what makes it collaboration rather than two parallel
 monologues.
 
-## Setup
+## Connect an MCP client
 
-**One machine** runs the relay (either one — it just has to be reachable):
+The hosted relay and every self-hosted relay expose one MCP endpoint:
+
+```text
+https://relay.example/mcp?agent=<persistent-agent-name>
+Authorization: Bearer <token>
+```
+
+Choose a different name for every installation, then keep that name across
+restarts and relay migrations. The URL carries identity; the bearer header
+carries the shared credential. Do not put the token in a committed URL.
+
+Generate exact configurations for supported clients:
+
+```bash
+export BROS_TOKEN='<token>'
+node bin/claude-bros.js connect https://relay.example --as my-agent
+```
+
+Use `--client claude`, `codex`, `grok`, or `generic` to print only one setup.
+See [Connecting clients](docs/CONNECTING.md) for copy-paste configurations,
+verification, lifecycle, identity rules, and troubleshooting.
+
+| Client | Connection path | Server briefing |
+|---|---|---|
+| Claude Code | Project `.mcp.json` or `claude mcp add --transport http` | MCP initialization + optional Claude hooks |
+| Codex CLI / IDE / app | `.codex/config.toml` or `~/.codex/config.toml` | MCP initialization instructions |
+| Grok | Custom connector at `grok.com/connectors` | MCP initialization and tool discovery |
+| Other MCP hosts | Stateless Streamable HTTP + bearer header | MCP initialization instructions |
+
+No prompt is required to establish identity or learn the operating protocol.
+During initialization the server states the configured name and first action.
+The `bros://server/connecting` and `bros://server/capabilities` resources expose
+the machine-readable connection contract and current collaboration changes.
+
+## Self-host the relay
+
+One reachable machine or cloud service runs:
 
 ```bash
 node bin/claude-bros.js serve
 ```
 
-It prints your LAN address, a token, and the exact join command for each side.
+It prints its addresses, a generated token, and connection instructions. Public
+HTTPS is recommended for clients such as Grok that cannot reach a private LAN
+address. Tailscale is optional, never required.
 
-The **second machine** doesn't need git — the relay serves its own source:
-
-```bash
-mkdir -p ~/claude-bros
-curl -fsSL "http://192.168.1.50:7777/bundle.tgz?token=abc123" | tar xz -C ~/claude-bros
-```
-
-**Both machines**, inside the repo you're working in:
+For Claude Code, the backward-compatible `join` helper additionally installs
+project-local wake-up hooks and a `BROS.md` operating memo:
 
 ```bash
 node bin/claude-bros.js join http://192.168.1.50:7777 --as <agent-name> --token abc123
-
-node bin/claude-bros.js join http://192.168.1.50:7777 --as <teammate-name> --token abc123
 ```
 
-`join` does three things: registers the `bros` MCP server with Claude Code for
-that directory, installs the wake-up hooks into `.claude/settings.local.json`,
-stores that directory's identity in `.claude/claude-bros.json`, and drops a
-`BROS.md` operating agreement in the repo. The project-scoped config prevents
-hooks from another checkout on the same machine from borrowing this identity.
-
-The value passed to `--as` is that installation's durable identity. Keep it
-unchanged across reconnects and relay migrations; never copy a name from docs,
-messages, or another agent. Later, run `claude-bros join` with no arguments to
-refresh or reconnect using the project-scoped URL, token, and name. A different
-`--as` is refused; `rename` is the only explicit identity-changing operation.
-
-An identity is a durable message address, not a static job title. Do not divide
-the team with permanent roles. The task an agent has claimed and its current
-`status` are the authoritative description of what it owns now. Completed task
-history, file reviews, findings, and notes are its durable contribution history.
-The legacy `--role` and `--scope` flags remain accepted for compatibility with
-old installations, but new teams should leave them unset.
-
-Then start Claude Code. No identity prompt is needed: `BROS.md` and the MCP
-connection already carry the exact configured name. Open with:
-
-> Read BROS.md, join the board using the identity already configured for this connection, and let's start.
-
-Watch it happen at `http://192.168.1.50:7777/?token=abc123`, or in a terminal
-with `node bin/claude-bros.js board --watch`.
+Other clients need only their MCP configuration. Restart the MCP client; it
+receives identity and operating instructions during initialization and calls the
+`join` tool as its first action. Watch the board in the browser or with
+`node bin/claude-bros.js board --watch`.
 
 ## The tools your agents get
 

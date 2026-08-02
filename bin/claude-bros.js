@@ -291,6 +291,53 @@ async function join(positional, flags) {
   console.log(`    ${c.g('"Read BROS.md, join using the identity already configured for this connection, and let\'s start."')}\n`);
 }
 
+// --------------------------------------------------------------- connect
+
+function connect(positional, flags) {
+  const raw = positional[0] || flags.url;
+  const agent = flags.as || flags.agent;
+  const client = String(flags.client || 'all').toLowerCase();
+  if (!raw || !agent) {
+    console.error(c.r('\n  Usage: claude-bros connect <https://relay> --as <persistent-name> [--client claude|codex|grok|generic|all]\n'));
+    process.exit(1);
+  }
+
+  let parsed;
+  try { parsed = new URL(raw); } catch {
+    console.error(c.r(`\n  Invalid relay URL: ${raw}\n`));
+    process.exit(1);
+  }
+  const suppliedToken = flags.token && flags.token !== true ? String(flags.token) : parsed.searchParams.get('token');
+  parsed.search = '';
+  parsed.hash = '';
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '').replace(/\/mcp$/, '') || '/';
+  const base = parsed.toString().replace(/\/$/, '');
+  const endpoint = `${base}/mcp?agent=${encodeURIComponent(String(agent))}`;
+  const show = (name, body) => console.log(`\n  ${c.b(name)}\n\n${body}`);
+
+  console.log(`\n  ${c.v('claude-bros')} — client-neutral MCP connection`);
+  console.log(`  endpoint: ${endpoint}`);
+  console.log(`  identity: ${c.b(agent)} ${c.dim('(keep this exact name across reconnects)')}`);
+  console.log(`  auth:     Authorization: Bearer $BROS_TOKEN`);
+  if (suppliedToken) console.log(`\n  ${c.y('!')} A token was supplied in the URL/flags. Export it as BROS_TOKEN; it is intentionally not printed.`);
+
+  const selected = (name) => client === 'all' || client === name;
+  if (!['all', 'claude', 'codex', 'grok', 'generic'].includes(client)) {
+    console.error(c.r(`\n  Unknown client "${client}". Use claude, codex, grok, generic, or all.\n`));
+    process.exit(1);
+  }
+  if (selected('claude')) show('Claude Code — project .mcp.json', JSON.stringify({
+    mcpServers: { bros: { type: 'http', url: endpoint, headers: { Authorization: 'Bearer ${BROS_TOKEN}' } } },
+  }, null, 2));
+  if (selected('codex')) show('Codex — project .codex/config.toml (or ~/.codex/config.toml)',
+    `[mcp_servers.bros]\nurl = ${JSON.stringify(endpoint)}\nbearer_token_env_var = "BROS_TOKEN"\nrequired = true`);
+  if (selected('grok')) show('Grok — grok.com/connectors → New Connector → Custom',
+    `MCP server URL: ${endpoint}\nAuthentication: Bearer token (the value of BROS_TOKEN)`);
+  if (selected('generic')) show('Any Streamable HTTP MCP client',
+    `Transport: Streamable HTTP (stateless)\nURL: ${endpoint}\nHeader: Authorization: Bearer <token>\nProtocol: initialize, notifications/initialized, then tools/list`);
+  console.log(`\n  ${c.dim('Give every installation a different persistent name. The client/model is not a role; claimed tasks describe current work.')}\n`);
+}
+
 // ---------------------------------------------------------------------- hook
 
 function installHooks(projectDir) {
@@ -454,6 +501,9 @@ switch (command) {
   case 'join':
     await join(positional, flags);
     break;
+  case 'connect':
+    connect(positional, flags);
+    break;
   case 'hook':
     await hook(flags);
     break;
@@ -473,7 +523,7 @@ switch (command) {
     await send(positional, flags);
     break;
   default:
-    console.error(c.r(`\n  Usage: claude-bros <serve|join|hook|rename|forget|doctor|board|send> ...`));
+    console.error(c.r(`\n  Usage: claude-bros <serve|connect|join|hook|rename|forget|doctor|board|send> ...`));
     console.log(c.dim(`
   serve                          Start the relay (port 7777, token auto-generated)
     --port N                       Port (default 7777, or BROS_PORT)
@@ -483,6 +533,8 @@ switch (command) {
     --hide-token                   Redact the token from startup logs
     --no-tailscale-note            Don't show Tailscale tip even if detected
   join <http://host:port> --as <name> [--token T] [--role "..."] [--scope "..."]
+  connect <https://relay> --as <name>   Print safe setup for Claude, Codex, Grok, or generic MCP
+    --client NAME                       claude, codex, grok, generic, or all (default)
   rename <current> <new>           Rename agent on board + this machine's MCP config
   forget <name> [--force]          Remove agent from roster (refuses if they own work)
   doctor                           End-to-end diagnostic for this machine

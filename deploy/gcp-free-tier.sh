@@ -125,8 +125,9 @@ cat <<'EOF'
   Next:
     1. Read the token when needed:
          gcloud secrets versions access latest --secret=bros-token
-    2. On every machine, inside the repo you work in, join the HTTPS URL printed above.
-    3. Restart Claude Code in that directory.
+    2. Generate configuration for each persistent identity:
+         node bin/claude-bros.js connect <relay-url> --as <name>
+    3. Add it to Claude, Codex, Grok, or another MCP host and restart that client.
 
   To move an existing board across:
        gcloud compute scp --tunnel-through-iap data/<room>.json claude-bros:/tmp/<room>.json --zone ZONE

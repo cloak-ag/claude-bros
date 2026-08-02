@@ -397,6 +397,8 @@ async function tick() {
       + '<div class="ink2" style="font-size:13px;margin-top:3px"><b>Current:</b> '
       + (current.length ? current.map((task) => '<code>' + esc(task.id) + '</code> ' + esc(task.title)).join('; ') : 'available — no claimed task') + '</div>'
       + '<div class="muted" style="margin-top:3px">Activity: ' + esc(a.status || 'idle') + '</div>'
+      + (a.client ? '<div class="muted">Client: ' + esc(a.client.title || a.client.name)
+        + (a.client.version ? ' ' + esc(a.client.version) : '') + '</div>' : '')
       + (taken.length ? '<div class="muted">Took ' + esc(taken.map((task) => task.id).join(', '))
         + (completed.length ? ' · built/completed ' + esc(completed.map((task) => task.id).join(', ')) : '') + '</div>' : '')
       + '<div class="muted">' + pill(st, st === 'active' ? 'up' : st)

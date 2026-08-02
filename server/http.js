@@ -13,17 +13,38 @@ import { buildGraph } from './graph.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
-const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.1.0' };
+const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26'];
+const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.2.0' };
 const COLLABORATION_PROTOCOL = {
   version: '2026-08-02',
   changes: [
+    'The relay is client-agnostic: Claude, Codex, Grok, and other Streamable HTTP MCP clients receive the same identity and operating contract.',
     'The relationship graph is available through the graph tool, bros://board/graph MCP resource, and related neighborhood queries.',
     'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',
     'Agents should check inbox between work units, acknowledge direct requests, and explicitly hand off work before a takeover.',
     'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
   ],
 };
+
+const connectionDocument = () => ({
+  transport: 'streamable-http',
+  protocolVersions: SUPPORTED_PROTOCOLS,
+  endpoint: '/mcp?agent=<persistent-agent-name>',
+  authentication: {
+    type: 'bearer',
+    header: 'Authorization: Bearer <token>',
+    queryParameter: 'token (legacy compatibility only)',
+  },
+  identity: 'Choose one persistent agent name per installation. Keep it across reconnects and relay migrations.',
+  lifecycle: ['initialize', 'notifications/initialized', 'tools/list or resources/list', 'tools/call or resources/read'],
+  clients: {
+    claudeCode: 'Remote HTTP MCP server; project .mcp.json or `claude mcp add --transport http`.',
+    codex: 'Remote HTTP MCP server in .codex/config.toml or ~/.codex/config.toml.',
+    grok: 'Public Custom MCP connector at grok.com/connectors.',
+    other: 'Any MCP client supporting stateless Streamable HTTP and bearer headers.',
+  },
+  documentation: '/help',
+});
 
 const capabilityDocument = () => {
   const toolNames = TOOL_DEFS.map((tool) => tool.name).sort();
@@ -40,6 +61,7 @@ const capabilityDocument = () => {
       graph: 'MCP resources/read bros://board/graph (or GET /api/graph)',
       reference: '/help',
       version: '/api/version',
+      connecting: 'MCP resources/read bros://server/connecting (or GET /api/connect)',
     },
   };
 };
@@ -116,28 +138,31 @@ function readBody(req, limit = 4 * 1024 * 1024) {
 
 async function handleRpc(room, agent, message, host = null) {
   const { id, method, params } = message;
-  const isNotification = id === undefined || id === null;
+  const isNotification = id === undefined;
   const ok = (result) => (isNotification ? null : { jsonrpc: '2.0', id, result });
 
   switch (method) {
     case 'initialize': {
       const requested = params?.protocolVersion;
+      const negotiated = SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0];
+      room.recordClient(agent, params?.clientInfo, negotiated);
       return ok({
-        protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
+        protocolVersion: negotiated,
         capabilities: {
           tools: { listChanged: false },
           resources: { subscribe: false, listChanged: false },
+          prompts: { listChanged: false },
           experimental: { collaborationProtocol: COLLABORATION_PROTOCOL },
         },
         serverInfo: SERVER_INFO,
         instructions:
-          'You are collaborating with Claude Code agents on OTHER MACHINES through this relay. They are ' +
+          'You are collaborating with Claude, Codex, Grok, and other MCP agents through this relay. They are ' +
           'real colleagues working the same engagement; anything you learn is invisible to them unless you ' +
           'put it on this board.\n\n' +
           (agent
             ? `IDENTITY: this MCP connection is configured as "${agent}". That exact name is the sole source ` +
               'of truth. Keep it across reconnects and relay migrations; never copy a name from examples, ' +
-              'messages, the roster, or prompts. `join` takes no name argument.\n\n'
+              'messages, the roster, or prompts.\n\n'
             : 'IDENTITY ERROR: this MCP connection has no configured agent name. Do not guess or copy one; ' +
               'fix the connection URL before doing work.\n\n') +
           'FIRST ACTION, ALWAYS: call `join`. It returns your full operating briefing and tells you exactly ' +
@@ -196,12 +221,20 @@ async function handleRpc(room, agent, message, host = null) {
           mimeType: 'application/json',
         },
         {
+          uri: 'bros://server/connecting',
+          name: 'Client-neutral connection contract',
+          description: 'Transport, authentication, identity, lifecycle, and supported client setup paths.',
+          mimeType: 'application/json',
+        },
+        {
           uri: 'bros://server/capabilities',
           name: 'Current relay capabilities and collaboration protocol',
           description: 'Machine-readable discovery paths, tool inventory, protocol version, and concise changes.',
           mimeType: 'application/json',
         },
       ] });
+    case 'resources/templates/list':
+      return ok({ resourceTemplates: [] });
     case 'resources/read': {
       const uri = params?.uri;
       if (uri === 'bros://board/graph') {
@@ -211,6 +244,10 @@ async function handleRpc(room, agent, message, host = null) {
       if (uri === 'bros://server/capabilities') {
         room.touch(agent);
         return ok({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(capabilityDocument()) }] });
+      }
+      if (uri === 'bros://server/connecting') {
+        room.touch(agent);
+        return ok({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(connectionDocument()) }] });
       }
       return isNotification ? null : rpcError(id, -32002, `Resource not found: ${uri || '(missing uri)'}`);
     }
@@ -298,15 +335,19 @@ export function createServer({ room, token, quiet = false }) {
         tools: toolNames,
         toolHash,
         capabilityHash,
-        resources: ['bros://board/graph', 'bros://server/capabilities'],
+        resources: ['bros://board/graph', 'bros://server/capabilities', 'bros://server/connecting'],
         graph: { ui: '/graph', api: '/api/graph', mcp: 'bros://board/graph' },
       });
     }
 
+    if (url.pathname === '/api/connect') return json(res, 200, connectionDocument());
+
     if (!authorized(url, req)) {
       const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
       if (!quiet) console.log(`\x1b[31m  ${new Date().toTimeString().slice(0, 8)}  REJECTED (bad token)  from ${ip}\x1b[0m`);
-      return json(res, 401, { error: 'Bad or missing token. Append ?token=... to the URL.' });
+      return json(res, 401, { error: 'Bad or missing token. Send Authorization: Bearer <token>.' }, {
+        'WWW-Authenticate': 'Bearer realm="claude-bros"',
+      });
     }
 
     // Lapsed claims should read as lapsed wherever people glance — the dashboard
@@ -316,11 +357,35 @@ export function createServer({ room, token, quiet = false }) {
 
     // ------------------------------------------------------------ MCP
     if (url.pathname === '/mcp') {
+      // Browser-based MCP clients send Origin. Accept same-origin traffic and
+      // explicit operator allowlisting, but reject arbitrary web pages to
+      // prevent DNS-rebinding attacks against a relay on a private network.
+      const origin = req.headers.origin;
+      if (origin) {
+        const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+        const allowed = new Set(String(process.env.BROS_ALLOWED_ORIGINS || '').split(',').map((v) => v.trim()).filter(Boolean));
+        let sameOrigin = false;
+        try { sameOrigin = new URL(origin).host === forwardedHost; } catch {}
+        if (!sameOrigin && !allowed.has(origin)) {
+          return json(res, 403, rpcError(null, -32000,
+            'Origin is not allowed. Add it to BROS_ALLOWED_ORIGINS on the relay if this is an intentional browser client.'));
+        }
+      }
       if (req.method === 'GET' || req.method === 'DELETE') {
         // No server-initiated streams and no server-side sessions to tear down.
-        return json(res, req.method === 'DELETE' ? 200 : 405, { ok: true });
+        return json(res, 405, { error: 'This stateless server does not provide an SSE stream or session deletion.' }, { Allow: 'POST' });
       }
-      if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+      if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
+
+      const contentType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+      if (contentType !== 'application/json') {
+        return json(res, 415, rpcError(null, -32600, 'MCP Streamable HTTP requests require Content-Type: application/json.'));
+      }
+      const protocolHeader = req.headers['mcp-protocol-version'];
+      if (protocolHeader && !SUPPORTED_PROTOCOLS.includes(String(protocolHeader))) {
+        return json(res, 400, rpcError(null, -32600,
+          `Unsupported MCP-Protocol-Version: ${protocolHeader}. Supported: ${SUPPORTED_PROTOCOLS.join(', ')}.`));
+      }
 
       let payload;
       try {
@@ -331,13 +396,20 @@ export function createServer({ room, token, quiet = false }) {
       if (!agent) {
         const id = Array.isArray(payload) ? null : (payload?.id ?? null);
         return json(res, 400, rpcError(id, -32600,
-          'Missing agent identity. Re-run `claude-bros join` in this project so its MCP URL includes ?agent=<agent-name>. Do not guess or copy another agent name.'));
+          'Missing agent identity. Configure this MCP endpoint with ?agent=<persistent-agent-name>. Do not guess or copy another agent name.'));
       }
 
       const batch = Array.isArray(payload);
+      if (batch && payload.length === 0) {
+        return json(res, 400, rpcError(null, -32600, 'Invalid Request: an empty JSON-RPC batch is not allowed.'));
+      }
       const messages = batch ? payload : [payload];
       const replies = [];
       for (const message of messages) {
+        if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
+          replies.push(rpcError(message?.id ?? null, -32600, 'Invalid JSON-RPC 2.0 request.'));
+          continue;
+        }
         log(req, agent, message.method === 'tools/call' ? `tool: ${message.params?.name}` : message.method);
         const reply = await handleRpc(room, agent, message, hostOf(req));
         if (reply) replies.push(reply);
@@ -347,7 +419,7 @@ export function createServer({ room, token, quiet = false }) {
       if (clash && !quiet) {
         console.log(`\x1b[41m\x1b[97m  NAME CLASH: "${agent}" is connecting from ${clash.join(' and ')}  \x1b[0m`);
         console.log('\x1b[31m  Two machines are sharing one identity — they will not see each other.');
-        console.log('  One of them must re-run join with a different --as name.\x1b[0m');
+        console.log('  Reconfigure one endpoint with a different persistent agent name.\x1b[0m');
       }
 
       if (!replies.length) {

@@ -102,8 +102,14 @@ ${NAV_CSS}
 
   <section>
     <h3>What this is</h3>
-    <p>${md('A relay that lets Claude Code agents on different machines work one engagement together. The agents reach it over MCP; you reach it through this page and the `claude-bros` CLI.')}</p>
+    <p>${md('A client-agnostic MCP relay that lets Claude, Codex, Grok, and other agents work one engagement together across machines. Agents reach it over stateless Streamable HTTP; humans use this page and the `claude-bros` CLI.')}</p>
     <p>${md('It exists to stop three failures: two agents doing the same work, two agents auditing different code without noticing, and one agent learning something the other never hears about.')}</p>
+  </section>
+
+  <section>
+    <h3>Connecting any MCP client</h3>
+    <p>${md('The endpoint is `https://relay/mcp?agent=<persistent-name>`, authenticated with `Authorization: Bearer <token>`. Every installation gets a unique name and keeps it across reconnects. Run `claude-bros connect <relay> --as <name>` for Claude, Codex, Grok, and generic configurations. The public `/api/connect` document and MCP resource `bros://server/connecting` expose the same contract.')}</p>
+    <p>${md('The model vendor is recorded as client metadata, never as a role. All clients receive the same initialization briefing and must call `join` first; current claimed tasks and `status` describe ownership.')}</p>
   </section>
 
   <section>
@@ -120,7 +126,7 @@ ${NAV_CSS}
       <li>${md('<b>Polling between units of work</b> — the agents are told to call `inbox` after each file or task rather than only at the end of a turn. A message that arrives 40 minutes into a long audit should not wait 40 minutes.')}</li>
       <li>${md('<b>Blocking on purpose</b> — `inbox` with `wait_seconds` holds the call open until mail lands, for when an agent genuinely cannot proceed without its partner.')}</li>
     </ul>
-    <p>${md('If an agent seems to ignore its partner, check `/hooks` in that Claude Code session for the two `claude-bros` entries. Without them, only polling is left.')}</p>
+    <p>${md('Claude Code can use the optional wake-up hooks installed by its `join` helper. Codex, Grok, and generic hosts should poll `inbox` between work units or block with `wait_seconds` when waiting for a reply.')}</p>
   </div>
 
   <section>
@@ -187,6 +193,7 @@ ${NAV_CSS}
     <h3>Your commands</h3>
     <div class="cli">
       <div><code>claude-bros serve --token &lt;t&gt;</code><span>Run the relay. One machine only.</span></div>
+      <div><code>claude-bros connect &lt;url&gt; --as &lt;name&gt;</code><span>Print client configuration for Claude, Codex, Grok, and generic MCP hosts.</span></div>
       <div><code>claude-bros join &lt;url&gt; --as &lt;name&gt;</code><span>Point a machine at the relay. Run inside the repo you work in.</span></div>
       <div><code>claude-bros doctor</code><span>Check one machine end to end and say exactly what is wrong.</span></div>
       <div><code>claude-bros board --watch</code><span>The board in your terminal.</span></div>
@@ -200,10 +207,10 @@ ${NAV_CSS}
   <section>
     <h3>When something is wrong</h3>
     <ul>
-      <li>${md('<b>A partner never appears</b> — they have not made a single tool call. Have them run `claude-bros doctor` on their machine.')}</li>
-      <li>${md('<b>A red name clash</b> — two machines joined under one name and share a single identity, so neither can see the other. One re-runs `join` with a different `--as`.')}</li>
-      <li>${md('<b>An agent has no bros tools</b> — that session started before `join` ran. Restart Claude Code in that directory.')}</li>
-      <li>${md('<b>Agents never react to each other</b> — the wake-up hooks are missing. Check `/hooks` for the two `claude-bros` entries.')}</li>
+      <li>${md('<b>A partner never appears</b> — they have not made a tool call. Inspect that client\'s MCP status and verify its endpoint, identity, and bearer token.')}</li>
+      <li>${md('<b>A red name clash</b> — two installations share one identity, so neither can see the other. Reconfigure one endpoint with a different persistent name.')}</li>
+      <li>${md('<b>An agent has no bros tools</b> — restart its MCP client after configuring the server, then inspect that client\'s MCP status.')}</li>
+      <li>${md('<b>Agents never react to each other</b> — make sure they call `inbox` between work units. Claude Code can additionally check `/hooks` for its optional wake-up hooks.')}</li>
       <li>${md('<b>Everything is frozen</b> — the relay is down. State survives in `data/&lt;room&gt;.json`, so restart it and nothing is lost.')}</li>
     </ul>
   </section>

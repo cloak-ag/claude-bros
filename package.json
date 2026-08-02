@@ -1,7 +1,7 @@
 {
   "name": "claude-bros",
-  "version": "0.1.0",
-  "description": "A LAN relay that lets Claude Code agents on different machines collaborate: shared task board, findings log, and real message passing.",
+  "version": "0.2.0",
+  "description": "A client-agnostic MCP relay where Claude, Codex, Grok, and other agents collaborate through a shared board.",
   "type": "module",
   "bin": {
     "claude-bros": "bin/claude-bros.js"
