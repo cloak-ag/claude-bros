@@ -27,16 +27,10 @@ export const graphHtml = (roomName, query = '') => `<!doctype html>
 ${THEME_CSS}
 ${NAV_CSS}
   body { padding:0 24px 24px; overflow:hidden; }
-  /* The void the graph floats in. Declared as a variable so the fog colour the
-     canvas blends toward is read from the same place — they cannot disagree. */
-  :root { --void:#f4f4f1; --void-edge:#e6e6e1; }
-  @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) { --void:#0d0d14; --void-edge:#06060a; }
-  }
-  :root[data-theme="dark"] { --void:#0d0d14; --void-edge:#06060a; }
+  /* Same surface as the rest of the dashboard — the canvas fogs toward this
+     exact colour, read from the token, so depth never fights the background. */
   .stage { position:relative; border:1px solid var(--line); border-radius:12px; overflow:hidden;
-           background:radial-gradient(125% 95% at 50% 42%,
-             color-mix(in srgb, var(--void) 88%, white 12%) 0%, var(--void) 55%, var(--void-edge) 100%); }
+           background:var(--plane); }
   canvas { display:block; width:100%; cursor:grab; touch-action:none; }
   canvas.drag { cursor:grabbing; }
 
@@ -109,12 +103,20 @@ let selected = null, hover = null, spinning = true;
 const cam = { yaw:0.5, pitch:-0.25, dist:900, f:820, panX:0, panY:0 };
 const canvas = el('c'), ctx = canvas.getContext('2d');
 let W = 0, H = 0, dpr = Math.min(devicePixelRatio || 1, 2);
-let haze = '#0a0a0e';
+let haze = '#0d0d0d', ink = '#ffffff';
 
-/** Take the fog colour straight from the CSS variable the stage is painted with. */
-function readHaze() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--void').trim();
-  if (/^#[0-9a-f]{6}$/i.test(v)) haze = v;
+/**
+ * Canvas 'currentColor' does not reliably resolve, which rendered every label
+ * black. Read the real tokens instead: text uses --ink, and the fog blends
+ * toward --plane, the same colour the stage is painted.
+ */
+function readTheme() {
+  const css = getComputedStyle(document.documentElement);
+  const plane = css.getPropertyValue('--plane').trim();
+  const text = css.getPropertyValue('--ink').trim();
+  if (/^#[0-9a-f]{6}$/i.test(plane)) haze = plane;
+  if (/^#[0-9a-f]{3,6}$/i.test(text)) ink = text.length === 4
+    ? '#' + text.slice(1).split('').map((c) => c + c).join('') : text;
 }
 
 function resize() {
@@ -219,7 +221,7 @@ function frame(now) {
     const lit = !focus || (focus.has(e.from) && focus.has(e.to));
     const fog = fogOf((a.p.z + b.p.z) / 2);
     ctx.globalAlpha = lit ? (focus ? 0.9 : 0.30) * (1 - fog * 0.72) : 0.04;
-    ctx.strokeStyle = lit && focus ? '#8b8b93' : mix('#8b8b93', haze, fog * 0.6);
+    ctx.strokeStyle = lit && focus ? mix(ink, haze, 0.45) : mix(ink, haze, 0.55 + fog * 0.35);
     ctx.lineWidth = Math.max(0.4, (lit && focus ? 1.5 : 0.9) * ((a.p.s + b.p.s) / 2));
     ctx.setLineDash(e.inferred ? [4, 4] : []);
     ctx.beginPath(); ctx.moveTo(a.p.sx, a.p.sy); ctx.lineTo(b.p.sx, b.p.sy); ctx.stroke();
@@ -253,14 +255,15 @@ function frame(now) {
     ctx.fillStyle = colour;
     ctx.fill();
     if (n.id === selected || n.id === hover) {
-      ctx.lineWidth = 1.6; ctx.strokeStyle = 'currentColor'; ctx.stroke();
+      ctx.lineWidth = 1.6; ctx.strokeStyle = ink; ctx.stroke();
     }
 
     // Only label what is near, connected and worth reading.
     if (lit && (n.id === selected || n.id === hover || (focus && n.p.s > 0.55) || (!focus && n.degree >= 8 && fog < 0.55))) {
-      ctx.globalAlpha = (1 - fog * 0.8) * (lit ? 0.95 : 0.1);
+      ctx.globalAlpha = (1 - fog * 0.35) * (lit ? 0.95 : 0.1);
       ctx.font = Math.max(9, 11 * n.p.s) + 'px ui-monospace, monospace';
-      ctx.fillStyle = 'currentColor';
+      // Labels sit above the fog: they lighten toward the ink, never toward black.
+      ctx.fillStyle = mix(ink, haze, fog * 0.45);
       ctx.textAlign = 'center';
       ctx.fillText(n.label.slice(0, 26), n.p.sx, n.p.sy - r - 4);
     }
@@ -431,7 +434,7 @@ async function load() {
   edges = g.edges;
   byId = new Map(nodes.map((n) => [n.id, n]));
   el('when').textContent = nodes.length + ' nodes · ' + edges.length + ' links';
-  readHaze(); resize();
+  readTheme(); resize();
   if (!previous.size) { simulate(); fit(); } else simulate(90);
 }
 load().then(schedule);
