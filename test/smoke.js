@@ -458,6 +458,33 @@ console.log('\n  persistence layer');
   check('a missing DATABASE_URL says so plainly', msg.includes('DATABASE_URL is not set'), msg);
 }
 
+console.log('\n  egress: compression and revalidation');
+{
+  const url = `${base}/api/state?token=${TOKEN}`;
+  // Node's fetch adds Accept-Encoding: gzip on its own, so ask for identity
+  // explicitly to see what an un-compressing client would actually receive.
+  const plain = await fetch(url, { headers: { 'Accept-Encoding': 'identity' } });
+  const gz = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } });
+  check('state is served with an ETag', Boolean(plain.headers.get('etag')));
+  check('Cache-Control allows revalidation', plain.headers.get('cache-control') === 'no-cache');
+  check('Vary: Accept-Encoding is set', plain.headers.get('vary') === 'Accept-Encoding');
+  check('gzip is honoured when offered', gz.headers.get('content-encoding') === 'gzip');
+  check('identity is honoured when gzip is refused', !plain.headers.get('content-encoding'));
+  const rawLen = Number(plain.headers.get('content-length'));
+  const gzLen = Number(gz.headers.get('content-length'));
+  check('compression actually shrinks the payload', gzLen < rawLen, `${gzLen} vs ${rawLen}`);
+
+  const tag = plain.headers.get('etag');
+  const again = await fetch(url, { headers: { 'If-None-Match': tag } });
+  check('an unchanged board revalidates to 304', again.status === 304, `got ${again.status}`);
+  check('the 304 carries no body', (await again.text()).length === 0);
+
+  await call('alpha', 'status', { text: 'poking the board to bump its version' });
+  const afterChange = await fetch(url, { headers: { 'If-None-Match': tag } });
+  check('a changed board returns 200 with fresh content', afterChange.status === 200);
+  check('the ETag moves when the board changes', afterChange.headers.get('etag') !== tag);
+}
+
 console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
 const pageText = await page.text();

@@ -26,6 +26,9 @@ export class Room {
     this.persistence = persistence;
     this.waiters = [];
     this.saveTimer = null;
+    // Bumped on every mutation. Lets the HTTP layer cache a serialised response
+    // and answer an unchanged poll with 304 instead of re-sending the board.
+    this.version = 1;
     this.state = {
       room: name,
       createdAt: nowIso(),
@@ -88,6 +91,7 @@ export class Room {
   }
 
   save() {
+    this.version += 1;
     // Persistence layer (PostgreSQL). Debounced like the file path, because a
     // busy board mutates several times per tool call and each write ships the
     // whole document. The promise is always caught — an unhandled rejection

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import zlib from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -19,6 +20,45 @@ const json = (res, code, body, headers = {}) => {
     'Content-Length': Buffer.byteLength(payload),
     'Cache-Control': 'no-store',
     ...headers,
+  });
+  res.end(payload);
+};
+
+/**
+ * The dashboard polls the whole board every 3 seconds. Sent raw that is ~1 MB a
+ * poll — roughly 900 GB/month per open tab, which on any metered link costs far
+ * more than the server. So: gzip it, and give it an ETag keyed to the room's
+ * mutation counter. The board changes ~25k times a month against ~860k polls,
+ * so the overwhelming majority of responses become empty 304s.
+ */
+const cached = new Map();
+const cachedJson = (req, res, body, version, key) => {
+  const accepts = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  const etag = `W/"${key}-${version}"`;
+
+  // Revalidation: nothing changed since the client last asked.
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' });
+    return res.end();
+  }
+
+  let entry = cached.get(key);
+  if (!entry || entry.version !== version) {
+    const raw = Buffer.from(JSON.stringify(body));
+    entry = { version, raw, gzip: zlib.gzipSync(raw, { level: 6 }) };
+    cached.set(key, entry);
+  }
+
+  const payload = accepts ? entry.gzip : entry.raw;
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Length': payload.length,
+    // no-cache, not no-store: the client must revalidate, which is what lets
+    // the 304 path work at all. no-store would forbid caching entirely.
+    'Cache-Control': 'no-cache',
+    ETag: etag,
+    Vary: 'Accept-Encoding',
+    ...(accepts ? { 'Content-Encoding': 'gzip' } : {}),
   });
   res.end(payload);
 };
@@ -231,8 +271,8 @@ export function createServer({ room, token, quiet = false }) {
     }
 
     // ------------------------------------------------- REST (humans, hooks)
-    if (url.pathname === '/api/board') return json(res, 200, room.board(agent));
-    if (url.pathname === '/api/state') return json(res, 200, room.state);
+    if (url.pathname === '/api/board') return cachedJson(req, res, room.board(agent), room.version, `board-${agent || '-'}`);
+    if (url.pathname === '/api/state') return cachedJson(req, res, room.state, room.version, 'state');
 
     if (url.pathname === '/api/unread') {
       if (!agent) return json(res, 400, { error: 'agent required' });
