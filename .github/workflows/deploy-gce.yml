@@ -1,0 +1,82 @@
+name: Deploy claude-bros to GCE
+
+on:
+  pull_request:
+    paths:
+      - 'bin/**'
+      - 'server/**'
+      - 'templates/**'
+      - 'package*.json'
+      - 'deploy/**'
+      - '.github/workflows/deploy-gce.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bin/**'
+      - 'server/**'
+      - 'templates/**'
+      - 'package*.json'
+      - 'deploy/**'
+      - '.github/workflows/deploy-gce.yml'
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_ZONE: ${{ vars.GCP_ZONE }}
+  GCE_INSTANCE: ${{ vars.GCE_INSTANCE }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Test
+        run: |
+          npm ci
+          npm test
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP without a service-account key
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Deploy over IAP
+        run: |
+          gcloud compute ssh "${GCE_INSTANCE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --zone="${GCP_ZONE}" \
+            --tunnel-through-iap \
+            --quiet \
+            --command='set -eu; sudo -u claude-bros git -C /opt/claude-bros pull --ff-only origin main; sudo systemctl restart claude-bros; sudo systemctl is-active --quiet claude-bros; curl -fsS http://127.0.0.1:7777/healthz'
+
+      - name: Summary
+        run: |
+          echo '## claude-bros deployed to GCE' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Authentication: GitHub OIDC (no JSON key)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Administration: IAP SSH' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Relay access: public HTTPS through Caddy; token required' >> "$GITHUB_STEP_SUMMARY"
+          echo '- State: persistent disk at `/var/lib/claude-bros`' >> "$GITHUB_STEP_SUMMARY"

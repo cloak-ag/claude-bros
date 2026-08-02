@@ -417,6 +417,18 @@ room.state.agents.zulu.hosts = ['relay-host'];
 check('clearing the extra host clears the warning', !(await call('alpha', 'board')).text.includes('WARNING'));
 
 console.log('\n  persistence layer');
+{
+  const fsFile = await import('node:fs');
+  const osFile = await import('node:os');
+  const pathFile = await import('node:path');
+  const dir = fsFile.mkdtempSync(pathFile.join(osFile.tmpdir(), 'bros-state-mode-'));
+  const file = pathFile.join(dir, 'private.json');
+  const r = new Room({ name: 'private', file });
+  r.note('tester', 'write a private state file');
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  check('file-backed state is owner-only', (fsFile.statSync(file).mode & 0o777) === 0o600);
+  fsFile.rmSync(dir, { recursive: true });
+}
 // A fake persistence layer stands in for Postgres: the contract is load/save,
 // and these are the bugs that made the real one unusable.
 {
