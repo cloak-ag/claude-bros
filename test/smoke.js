@@ -85,6 +85,9 @@ await call('alpha', 'task_add', { title: 'Review password reset flow', scope: 'a
 const claimed = await call('alpha', 'task_claim', { id: 'T1' });
 check('first claim succeeds', !claimed.isError && claimed.text.includes('You own T1'));
 await call('beta', 'inbox'); // collaboration event: see who claimed it before attempting overlap
+const tamper = await call('beta', 'task_update', { id: 'T1', status: 'open' });
+check('a non-owner cannot bypass governance by reopening another agent task',
+  tamper.isError && tamper.text.includes('task_reassign'));
 const stolen = await call('beta', 'task_claim', { id: 'T1' });
 check('second agent is blocked from the same task',
   stolen.isError && stolen.text.includes('being worked by alpha') && stolen.text.includes('last active'), stolen.text);

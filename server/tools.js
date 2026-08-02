@@ -807,6 +807,10 @@ export async function callTool(room, agent, name, args = {}, host = null) {
     }
 
     case 'poll_create': {
+      const actions = new Set(['task_reassign', 'task_release', 'agent_kick', 'agent_restore']);
+      if (args.action && !actions.has(args.action)) {
+        return fail(`Unknown poll action "${args.action}". Use task_reassign, task_release, agent_kick, or agent_restore.`);
+      }
       let action = null;
       if (args.action === 'task_reassign') action = { type: args.action, taskId: args.task_id, to: args.assign_to };
       else if (args.action === 'task_release') action = { type: args.action, taskId: args.task_id };

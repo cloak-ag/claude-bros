@@ -208,6 +208,16 @@ export class Room {
       poll.quorum = this.#pollQuorum(poll);
       poll.requiredYes = this.#pollRequiredYes(poll);
     }
+    for (const task of this.state.tasks) {
+      if (!Array.isArray(task.participants)) {
+        task.participants = [...new Set([
+          task.owner,
+          task.lastOwner,
+          ...(task.history || []).filter((entry) => entry.what === 'claimed').map((entry) => entry.who),
+        ].filter(Boolean))];
+        healed += 1;
+      }
+    }
 
     if (repaired || numbered || healed) {
       const parts = [];
@@ -334,7 +344,8 @@ export class Room {
       // role/scope may exist in restored pre-task-model state. Keep them on
       // disk for lossless migration, but never expose them as current identity.
       const { role: _legacyRole, scope: _legacyScope, ...a } = record;
-      const taken = this.state.tasks.filter((task) => task.owner === a.name || task.lastOwner === a.name
+      const taken = this.state.tasks.filter((task) => (task.participants || []).includes(a.name)
+        || task.owner === a.name || task.lastOwner === a.name
         || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
       return {
         ...a,
@@ -448,6 +459,7 @@ export class Room {
       createdAt: nowIso(),
       updatedAt: nowIso(),
       history: [{ ts: nowIso(), who: from, what: assignTo ? `created, assigned to ${assignTo}` : 'created' }],
+      participants: assignTo ? [assignTo] : [],
     };
     if (dependsOn) task.dependsOn = dependsOn;
     this.state.tasks.push(task);
@@ -493,7 +505,7 @@ export class Room {
     this.releaseStaleClaims();
     const task = this.task(id);
     if (!task) return { ok: false, error: `No task ${id}.` };
-    if (task.owner && task.owner !== agent && task.status !== 'open') {
+    if (task.owner && task.owner !== agent) {
       const owner = this.state.agents[task.owner];
       const quiet = Math.round((Date.now() - (owner?.lastSeen || 0)) / 60000);
       return {
@@ -520,6 +532,8 @@ export class Room {
     }
 
     task.owner = agent;
+    task.participants ||= [];
+    if (!task.participants.includes(agent)) task.participants.push(agent);
     task.status = 'claimed';
     task.updatedAt = nowIso();
     task.history.push({ ts: nowIso(), who: agent, what: 'claimed' });
@@ -532,6 +546,13 @@ export class Room {
     if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot update tasks.` };
     const task = this.task(id);
     if (!task) return { ok: false, error: `No task ${id}.` };
+    if (task.owner && task.owner !== agent) {
+      return {
+        ok: false,
+        error: `${id} belongs to ${task.owner}. You cannot change or release another agent's task directly. `
+          + 'Use poll_create with task_reassign or task_release.',
+      };
+    }
     if (status) task.status = status;
     if (notes) task.notes = task.notes ? `${task.notes}\n${notes}` : notes;
     task.updatedAt = nowIso();
@@ -611,6 +632,9 @@ export class Room {
       if (action.type === 'task_reassign') {
         if (!action.to || !this.state.agents[action.to]) return { ok: false, error: `No agent called "${action.to || ''}".` };
         if (this.#isKicked(action.to)) return { ok: false, error: `${action.to} is kicked and cannot receive work.` };
+        if (Date.now() - (this.state.agents[action.to].lastSeen || 0) >= ONLINE_WINDOW_MS) {
+          return { ok: false, error: `${action.to} is inactive and cannot receive reassigned work.` };
+        }
       }
       return { ok: true, action: { type: action.type, taskId: action.taskId, ...(action.to ? { to: action.to } : {}) } };
     }
@@ -739,9 +763,16 @@ export class Room {
       if (!task) return { ok: false, error: `No task ${action.taskId}.` };
       if (task.status === 'done') return { ok: false, error: `${task.id} became done before the poll passed.` };
       const previous = task.owner;
+      task.participants ||= [];
+      if (previous && !task.participants.includes(previous)) task.participants.push(previous);
       if (action.type === 'task_reassign') {
         if (!this.state.agents[action.to] || this.#isKicked(action.to)) return { ok: false, error: `${action.to} cannot receive work.` };
+        if (Date.now() - (this.state.agents[action.to].lastSeen || 0) >= ONLINE_WINDOW_MS) {
+          return { ok: false, error: `${action.to} became inactive before the poll passed.` };
+        }
+        if (previous) task.lastOwner = previous;
         task.owner = action.to;
+        if (!task.participants.includes(action.to)) task.participants.push(action.to);
         task.status = 'claimed';
         task.history ||= [];
         task.history.push({ ts, who: 'system', what: `reassigned by poll ${poll.id}: ${previous || 'unowned'} → ${action.to}` });
@@ -1012,6 +1043,8 @@ export class Room {
     }
     for (const t of this.state.tasks) {
       if (t.owner === from) { t.owner = to; touched += 1; }
+      if (t.lastOwner === from) t.lastOwner = to;
+      t.participants = (t.participants || []).map((name) => (name === from ? to : name));
       if (t.createdBy === from) t.createdBy = to;
       for (const h of t.history || []) if (h.who === from) h.who = to;
     }

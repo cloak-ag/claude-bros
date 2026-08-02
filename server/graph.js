@@ -47,7 +47,8 @@ export function buildGraph(state) {
     const currentTasks = (state.tasks || [])
       .filter((task) => task.owner === agent.name && ['claimed', 'blocked'].includes(task.status));
     const tasksTaken = (state.tasks || []).filter((task) =>
-      task.owner === agent.name
+      (task.participants || []).includes(agent.name)
+      || task.owner === agent.name
       || task.lastOwner === agent.name
       || (task.history || []).some((entry) => entry.who === agent.name && entry.what === 'claimed'));
     const completed = tasksTaken.filter((task) => task.status === 'done');

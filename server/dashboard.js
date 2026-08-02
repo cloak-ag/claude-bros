@@ -389,7 +389,8 @@ async function tick() {
     const st = liveness(a);
     const t = ms(a.lastSeen);
     const current = tasks.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status));
-    const taken = tasks.filter((task) => task.owner === a.name || task.lastOwner === a.name
+    const taken = tasks.filter((task) => (task.participants || []).includes(a.name)
+      || task.owner === a.name || task.lastOwner === a.name
       || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
     const completed = taken.filter((task) => task.status === 'done');
     return who(a.name, st)

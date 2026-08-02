@@ -76,6 +76,8 @@ result = room.votePoll('bob', reassignId, 'yes');
 check(result.poll.status === 'passed', 'task reassignment passes');
 assert.equal(room.task(assigned.id).owner, 'bob'); checks += 1;
 assert.equal(room.task(assigned.id).status, 'claimed'); checks += 1;
+assert.deepEqual(room.task(assigned.id).participants, ['charlie', 'bob']); checks += 1;
+assert.equal(room.task(assigned.id).lastOwner, 'charlie'); checks += 1;
 assert.equal(room.task(assigned.id).history.filter((entry) => entry.what.includes(`reassigned by poll ${reassignId}`)).length, 1); checks += 1;
 check(room.closePoll('alice', reassignId).alreadyClosed, 'closing a finished poll is idempotent');
 
@@ -114,6 +116,7 @@ check(room.rename('alice', 'alice-2').ok, 'agent rename succeeds');
 const renamedPoll = room.poll(renamePollId);
 check(renamedPoll.eligible.includes('alice-2') && !renamedPoll.eligible.includes('alice'), 'poll electorate follows rename');
 check(Boolean(renamedPoll.votes['alice-2']) && !renamedPoll.votes.alice, 'cast ballot follows rename');
+check(room.state.tasks.every((task) => !(task.participants || []).includes('alice')), 'task participation history follows rename');
 
 // A malformed record from an early/draft schema is repaired without dropping
 // data, and the poll counter advances beyond IDs already on disk.
