@@ -112,7 +112,9 @@ export class Room {
       try {
         fs.mkdirSync(path.dirname(this.file), { recursive: true });
         const tmp = `${this.file}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
+        // The board can contain embargoed findings and agent messages. Keep
+        // every atomic replacement private instead of inheriting umask 022.
+        fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
         fs.renameSync(tmp, this.file);
       } catch (err) {
         console.error('[bros] save failed:', err.message);

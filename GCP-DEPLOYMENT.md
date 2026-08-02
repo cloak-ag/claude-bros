@@ -86,7 +86,7 @@ and the state file sits on a disk you control.
 The only thing GCP buys you is **availability when your laptop is closed**. If that is not a
 real problem, this is the correct answer and everything below is unnecessary spend.
 
-### Option B — `e2-micro` Always Free VM + Tailscale · **~$3.65/month** ← recommended for GCP
+### Option B — `e2-micro` Always Free VM + Tailscale · **~$3.65/month**
 
 The Compute Engine Always Free tier gives you, indefinitely:
 
@@ -119,7 +119,7 @@ Same VM, but exposed publicly with Caddy or nginx + Let's Encrypt instead of Tai
 Adds no GCP charges beyond Option B, but see §5 — the security model does not survive
 public exposure without changes.
 
-### Option D — Cloud Run, always-on (what PR #2 proposes) · **$21–53/month**
+### Option D — Cloud Run, always-on (retired PR #2 design) · **$21–53/month**
 
 `minScale=1`, `maxScale=1`, `cpu-throttling: false` (which my fix set, because the debounced
 state save needs CPU between requests) means you are paying for a permanently allocated
@@ -155,49 +155,32 @@ Not worth it for a $4 alternative.
 
 ---
 
-## 4. Recommended build — Option B, step by step
+## 4. Deployed build — Option C
 
 ```bash
-# 1. VM on the free tier — region MUST be us-west1 / us-central1 / us-east1
-gcloud compute instances create claude-bros \
-  --project=<PROJECT> \
-  --zone=us-central1-a \
-  --machine-type=e2-micro \
-  --boot-disk-size=30GB --boot-disk-type=pd-standard \
-  --image-family=debian-12 --image-project=debian-cloud \
-  --network-tier=STANDARD \
-  --tags=bros
-
-# 2. Deny all inbound; Tailscale needs no open ports
-gcloud compute firewall-rules create bros-deny-in \
-  --direction=INGRESS --action=DENY --rules=all --target-tags=bros --priority=1000
-
-# 3. On the VM
-sudo apt-get update && sudo apt-get install -y nodejs npm
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --ssh
-git clone https://github.com/vict0rcarvalh0/claude-bros && cd claude-bros
-
-# 4. Run it under systemd so it survives reboots
-sudo tee /etc/systemd/system/claude-bros.service >/dev/null <<'EOF'
-[Unit]
-Description=claude-bros relay
-After=network-online.target
-[Service]
-ExecStart=/usr/bin/node /home/USER/claude-bros/bin/claude-bros.js serve --room bounty
-Environment=BROS_TOKEN=<a fresh token>
-Restart=always
-User=USER
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl enable --now claude-bros
+# The defaults use us-central1-a and the default VPC. Projects with a custom
+# VPC can select an Always Free region, network, and subnet explicitly:
+ZONE=us-east1-b NETWORK=prod-vpc SUBNET=prod-subnet-relay \
+  ./deploy/gcp-free-tier.sh cloak-prod
 ```
 
-Then on each machine, join over the tailnet address:
+The script creates the e2-micro and persistent disk, permits SSH only through
+Identity-Aware Proxy, exposes only Caddy on ports 80/443, and keeps Node bound to
+localhost. Caddy obtains and renews TLS automatically for a stable `sslip.io`
+hostname. Relay state lives at `/var/lib/claude-bros` with mode `0600`; the
+checkout at `/opt/claude-bros` can be updated independently without risking the
+board.
+
+GitHub deployment uses repository-scoped Workload Identity Federation rather
+than a downloadable service-account key. The workflow runs the test suite,
+connects over IAP, fast-forwards the checkout, restarts the service, and checks
+its health. GCP identifiers live in repository variables; no GCP credential or
+relay token is stored in GitHub.
+
+Then on each machine, join over the HTTPS address printed by the deploy:
 
 ```bash
-node bin/claude-bros.js join http://<tailscale-ip>:7777 --as <name> --token <token>
+node bin/claude-bros.js join https://<relay-host> --as <name> --token <token>
 ```
 
 **Set `--network-tier=STANDARD`.** Premium tier gives you 1 GiB free egress; Standard is both
@@ -217,7 +200,10 @@ The relay's threat model is "trusted LAN". Three things change on the public int
 3. **There is no rate limiting and no per-agent authentication.** One shared secret grants
    full read/write to the board, including `finding_*` and `env_set`.
 
-Tailscale (Option B) sidesteps all three, which is the main reason to prefer it.
+The deployed Caddy configuration does not enable access logs, adds
+`Referrer-Policy: no-referrer`, and the bootstrap rotates the old token to a new
+128-bit value. The token remains a bearer credential and must not be shared in
+issues, commits, or chat logs.
 
 ---
 
@@ -226,9 +212,9 @@ Tailscale (Option B) sidesteps all three, which is the main reason to prefer it.
 | Option | Monthly | Verdict |
 |---|---|---|
 | **A. Own machine + Tailscale** | **$0** | Cheapest. Correct unless you need laptop-independent uptime |
-| **B. e2-micro free tier + Tailscale** | **~$4** | **Recommended GCP path.** External IP is the only real charge |
-| C. e2-micro + public HTTPS | ~$4–6 | Same cost, worse security posture |
-| D. Cloud Run always-on + Cloud SQL | $29–53 | What PR #2 proposes. 6–13× more for a worse fit |
+| B. e2-micro free tier + Tailscale | ~$4 | Private option, but requires every agent to join a tailnet |
+| **C. e2-micro + public HTTPS** | **~$4–6** | **Deployed path.** No client VPN; Caddy TLS + token auth |
+| D. Cloud Run always-on + Cloud SQL | $29–53 | Retired PR #2 design. 6–13× more for a worse fit |
 | E. Cloud Run scale-to-zero + Cloud SQL | $8–12 | Breaks long-polling and slows every agent turn |
 
 **Do the egress fixes first.** At 916 GB/month, a single open dashboard tab costs more than
