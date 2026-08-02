@@ -26,17 +26,24 @@ const responseHopByHop = [
   'transfer-encoding', 'upgrade', 'te', 'trailer',
 ];
 
-export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet = false, allowInsecureForTests = false }) {
+export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet = false, allowInsecureForTests = false, acceptCanonicalToken = true }) {
   if (!canonicalUrl || !oldToken || !newToken) throw new Error('canonicalUrl, oldToken, and newToken are required');
   const canonical = new URL(canonicalUrl);
   if (canonical.protocol !== 'https:' && !allowInsecureForTests) throw new Error('canonicalUrl must use HTTPS');
   const transport = canonical.protocol === 'https:' ? https : http;
 
+  // Clients presenting the canonical token are accepted too, so a machine
+  // already reconfigured for the new relay keeps working against the legacy
+  // address. Note this lets the canonical credential travel over plain HTTP on
+  // the LAN, where previously only the legacy one did — acceptable only on a
+  // trusted network, and a reason to rotate if that assumption ever breaks.
+  const accepted = acceptCanonicalToken ? [oldToken, newToken] : [oldToken];
+  const presents = (candidate) => accepted.some((secret) => sameSecret(candidate, secret));
   const isAuthorized = (url, req) => {
     const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    return sameSecret(url.searchParams.get('token'), oldToken)
-      || sameSecret(bearer, oldToken)
-      || sameSecret(req.headers['x-bros-token'], oldToken);
+    return presents(url.searchParams.get('token'))
+      || presents(bearer)
+      || presents(req.headers['x-bros-token']);
   };
 
   const migrationPage = `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>claude-bros migrated</title><style>body{font:16px system-ui;max-width:760px;margin:12vh auto;padding:24px;line-height:1.5}code{background:#eee;padding:2px 5px}</style><h1>This relay migrated</h1><p>Existing MCP, REST, and hook clients are forwarded automatically. Their configured agent names are preserved exactly; no prompt, rename, or configuration change is required.</p><p>Canonical relay: <a href="${canonical.origin}">${canonical.origin}</a></p><p>New installations should join the canonical HTTPS URL with the current relay token and a unique, durable agent name.</p>`;

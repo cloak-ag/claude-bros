@@ -79,4 +79,43 @@ check(forwardedBody.renderedLink.includes('[redacted]') && !JSON.stringify(forwa
 
 await new Promise((resolve) => proxy.close(resolve));
 await new Promise((resolve) => upstream.close(resolve));
-console.log('migration proxy: 18 checks passed');
+
+// Either credential is accepted locally: the legacy one for agents that never
+// changed, the canonical one for a machine already pointed at the new relay.
+{
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, sawAuth: req.headers.authorization === 'Bearer NEWTOKEN' }));
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const target = `http://127.0.0.1:${upstream.address().port}`;
+
+  const bridge = createMigrationProxy({
+    canonicalUrl: target, oldToken: 'OLDTOKEN', newToken: 'NEWTOKEN',
+    quiet: true, allowInsecureForTests: true,
+  });
+  await new Promise((r) => bridge.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${bridge.address().port}`;
+
+  const legacy = await fetch(`${base}/api/state?token=OLDTOKEN`);
+  check(legacy.status === 200, 'legacy token is still accepted');
+  const canonical = await fetch(`${base}/api/state?token=NEWTOKEN`);
+  check(canonical.status === 200, 'canonical token is accepted too');
+  check((await canonical.json()).sawAuth === true, 'the canonical token is what reaches upstream');
+  const bearer = await fetch(`${base}/api/state`, { headers: { Authorization: 'Bearer NEWTOKEN' } });
+  check(bearer.status === 200, 'canonical token works as a bearer header');
+  const wrong = await fetch(`${base}/api/state?token=NEITHER`);
+  check(wrong.status === 401, 'an unrelated token is still refused');
+
+  const strict = createMigrationProxy({
+    canonicalUrl: target, oldToken: 'OLDTOKEN', newToken: 'NEWTOKEN',
+    quiet: true, allowInsecureForTests: true, acceptCanonicalToken: false,
+  });
+  await new Promise((r) => strict.listen(0, '127.0.0.1', r));
+  const strictBase = `http://127.0.0.1:${strict.address().port}`;
+  check((await fetch(`${strictBase}/api/state?token=NEWTOKEN`)).status === 401,
+    'acceptCanonicalToken:false restores legacy-only auth');
+
+  bridge.close(); strict.close(); upstream.close();
+}
+console.log('migration proxy: 24 checks passed');
