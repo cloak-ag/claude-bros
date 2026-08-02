@@ -205,18 +205,47 @@ token is kept in a root-only file and synchronized to GCP Secret Manager as
 
 Deployments from GitHub use Workload Identity Federation—there is no JSON
 service-account key to create or store in repository secrets. The workflow
-connects to the VM over IAP, fast-forwards `/opt/claude-bros`, restarts the
-service, and checks `/healthz`. Its non-sensitive GCP identifiers are configured
-as repository variables named `GCP_PROJECT_ID`, `GCP_ZONE`, `GCE_INSTANCE`,
+connects to the VM over IAP, fast-forwards `/opt/claude-bros` to the exact commit
+that passed CI, installs production dependencies, restarts the service, and
+checks `/healthz`. Its non-sensitive GCP identifiers are configured as
+repository variables named `GCP_PROJECT_ID`, `GCP_ZONE`, `GCE_INSTANCE`,
 `GCP_WORKLOAD_IDENTITY_PROVIDER`, and `GCP_SERVICE_ACCOUNT`.
+
+The identity provider must trust only this repository's protected `main`
+branch. A minimal setup is:
+
+```bash
+PROJECT_ID='<gcp-project>'
+PROJECT_NUMBER='<gcp-project-number>'
+REPOSITORY='<github-owner>/<github-repo>'
+DEPLOY_SA='ci-relay-deploy'
+
+gcloud iam workload-identity-pools create github-pool \
+  --project "$PROJECT_ID" --location global --display-name 'GitHub Actions'
+gcloud iam workload-identity-pools providers create-oidc claude-bros \
+  --project "$PROJECT_ID" --location global --workload-identity-pool github-pool \
+  --issuer-uri https://token.actions.githubusercontent.com \
+  --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref' \
+  --attribute-condition "assertion.repository=='${REPOSITORY}' && assertion.ref=='refs/heads/main'"
+gcloud iam service-accounts create "$DEPLOY_SA" --project "$PROJECT_ID"
+gcloud iam service-accounts add-iam-policy-binding \
+  "${DEPLOY_SA}@${PROJECT_ID}.iam.gserviceaccount.com" --project "$PROJECT_ID" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${REPOSITORY}"
+```
+
+Grant that service account only the Compute read, OS Login, IAP tunnel, and
+instance service-account impersonation permissions required by your selected
+VM. Protect `main` with an approving review and the workflow's `test` check
+before enabling deployment.
 
 To import an existing room without exposing its contents in an image or Git:
 
 ```bash
 gcloud compute scp --tunnel-through-iap data/bounty.json \
-  claude-bros:/tmp/bounty.json --zone us-east1-b
+  claude-bros:/var/tmp/bounty-import.json --zone us-east1-b
 gcloud compute ssh claude-bros --tunnel-through-iap --zone us-east1-b \
-  --command 'sudo install -o claude-bros -g claude-bros -m 600 /tmp/bounty.json /var/lib/claude-bros/bounty.json && sudo systemctl restart claude-bros'
+  --command 'set -eu; node -e '\''JSON.parse(require("fs").readFileSync("/var/tmp/bounty-import.json","utf8"))'\''; sudo systemctl stop claude-bros; stamp=$(date -u +%Y%m%dT%H%M%SZ); sudo cp --preserve=all /var/lib/claude-bros/bounty.json /var/lib/claude-bros/bounty.json.before-import-${stamp}; sudo install -o claude-bros -g claude-bros -m 600 /var/tmp/bounty-import.json /var/lib/claude-bros/bounty.json; rm /var/tmp/bounty-import.json; sudo systemctl start claude-bros'
 ```
 
 ## Notes
