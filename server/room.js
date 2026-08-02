@@ -37,12 +37,13 @@ export class Room {
       tasks: [],
       findings: [],
       goals: [],
+      polls: [],
       files: {},
       env: {},
       digests: [],
       log: [],
       aliases: {},
-      counters: { message: 0, task: 0, finding: 0, goal: 0, seq: 0 },
+      counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 0, seq: 0 },
     };
     // Synchronous load for file-based or pure in-memory (used by tests);
     // async init() for PostgreSQL
@@ -143,6 +144,18 @@ export class Room {
    * counter past the highest id actually in use so nothing collides.
    */
   #repairIds() {
+    // These collections did not all exist in early state files. Be deliberately
+    // conservative here: a missing collection is healed, while existing audit
+    // history is never discarded.
+    let healed = 0;
+    for (const key of ['messages', 'tasks', 'findings', 'goals', 'polls', 'digests', 'log']) {
+      if (!Array.isArray(this.state[key])) { this.state[key] = []; healed += 1; }
+    }
+    if (!this.state.agents || typeof this.state.agents !== 'object' || Array.isArray(this.state.agents)) { this.state.agents = {}; healed += 1; }
+    if (!this.state.files || typeof this.state.files !== 'object' || Array.isArray(this.state.files)) { this.state.files = {}; healed += 1; }
+    if (!this.state.aliases || typeof this.state.aliases !== 'object' || Array.isArray(this.state.aliases)) { this.state.aliases = {}; healed += 1; }
+    if (!this.state.counters || typeof this.state.counters !== 'object') { this.state.counters = {}; healed += 1; }
+
     const kinds = [
       ['goal', 'G', this.state.goals, (from, to) => this.state.tasks.forEach((t) => { if (t.goal === from) t.goal = to; })],
       ['task', 'T', this.state.tasks, null],
@@ -150,6 +163,7 @@ export class Room {
         f.findings = (f.findings || []).map((id) => (id === from ? to : id));
       })],
       ['message', 'M', this.state.messages, null],
+      ['poll', 'P', this.state.polls, null],
     ];
 
     let repaired = 0;
@@ -183,10 +197,23 @@ export class Room {
     }
     this.state.counters.seq = seq;
 
-    if (repaired || numbered) {
+    // Polls initially shipped after the rest of the board schema. Heal the
+    // few fields required to evaluate old/draft records deterministically.
+    for (const poll of this.state.polls) {
+      if (!poll.votes || typeof poll.votes !== 'object' || Array.isArray(poll.votes)) { poll.votes = {}; healed += 1; }
+      if (!Array.isArray(poll.eligible)) { poll.eligible = Object.keys(this.state.agents).filter((name) => !this.#isKicked(name)); healed += 1; }
+      if (!poll.status) { poll.status = 'open'; healed += 1; }
+      if (!poll.createdAt) { poll.createdAt = nowIso(); healed += 1; }
+      if (!poll.updatedAt) { poll.updatedAt = poll.createdAt; healed += 1; }
+      poll.quorum = this.#pollQuorum(poll);
+      poll.requiredYes = this.#pollRequiredYes(poll);
+    }
+
+    if (repaired || numbered || healed) {
       const parts = [];
       if (repaired) parts.push(`${repaired} malformed id(s)`);
       if (numbered) parts.push(`${numbered} unsequenced message(s)`);
+      if (healed) parts.push(`${healed} malformed state field(s)`);
       console.log(`[bros] migrated ${parts.join(' and ')} from an older state file`);
       this.save();
     }
@@ -218,8 +245,6 @@ export class Room {
     if (!name) return null;
     const agent = (this.state.agents[name] ||= {
       name,
-      role: '',
-      scope: '',
       status: 'idle',
       joinedAt: nowIso(),
       lastSeen: 0,
@@ -229,11 +254,19 @@ export class Room {
     return agent;
   }
 
-  join(name, { role = '', scope = '' , host = null } = {}) {
+  join(name, { host = null } = {}) {
     // Two machines under one name is the worst failure mode: statuses overwrite
     // and neither side can message the other. Refuse rather than warn, unless
     // the machine holding the name has gone quiet long enough to be gone.
     const existing = this.state.agents[name];
+    if (existing?.membershipStatus === 'kicked') {
+      return {
+        ok: false,
+        kicked: true,
+        error: `"${name}" was removed by collaboration poll ${existing.kickedByPoll || ''}. `
+          + 'A passed restore poll is required before this identity can rejoin.',
+      };
+    }
     if (existing && host) {
       const others = (existing.hosts || []).filter((h) => h !== host);
       const quietFor = Date.now() - (existing.lastSeen || 0);
@@ -250,12 +283,10 @@ export class Room {
     }
     const fresh = !this.state.agents[name];
     const agent = this.touch(name);
-    if (role) agent.role = role;
-    if (scope) agent.scope = scope;
     // Reading the briefing is what `join` is for; record that it happened so
     // agents that arrived before the briefing existed can be nagged into it.
     agent.briefedAt = nowIso();
-    if (fresh) this.note(name, `joined as ${role || 'agent'}`);
+    if (fresh) this.note(name, 'joined');
     this.save();
     return { ok: true, agent };
   }
@@ -299,13 +330,25 @@ export class Room {
   }
 
   roster() {
-    return Object.values(this.state.agents).map((a) => ({
-      ...a,
-      online: Date.now() - (a.lastSeen || 0) < ONLINE_WINDOW_MS,
-      statusAgeMs: Date.now() - (a.statusAt || 0),
-      statusStale: Date.now() - (a.statusAt || 0) > STATUS_STALE_MS,
-      lastSeenAgo: a.lastSeen ? `${Math.round((Date.now() - a.lastSeen) / 1000)}s ago` : 'never',
-    }));
+    return Object.values(this.state.agents).map((record) => {
+      // role/scope may exist in restored pre-task-model state. Keep them on
+      // disk for lossless migration, but never expose them as current identity.
+      const { role: _legacyRole, scope: _legacyScope, ...a } = record;
+      const taken = this.state.tasks.filter((task) => task.owner === a.name || task.lastOwner === a.name
+        || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
+      return {
+        ...a,
+        currentTasks: taken.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status))
+          .map((task) => ({ id: task.id, title: task.title, status: task.status })),
+        tasksTaken: taken.map((task) => task.id),
+        completedTasks: taken.filter((task) => task.status === 'done')
+          .map((task) => ({ id: task.id, title: task.title, notes: task.notes || '' })),
+        online: a.membershipStatus !== 'kicked' && Date.now() - (a.lastSeen || 0) < ONLINE_WINDOW_MS,
+        statusAgeMs: Date.now() - (a.statusAt || 0),
+        statusStale: Date.now() - (a.statusAt || 0) > STATUS_STALE_MS,
+        lastSeenAgo: a.lastSeen ? `${Math.round((Date.now() - a.lastSeen) / 1000)}s ago` : 'never',
+      };
+    });
   }
 
   // -------------------------------------------------------------- messages
@@ -446,6 +489,7 @@ export class Room {
 
   /** The whole point of the relay: two agents cannot claim the same work. */
   claimTask(agent, id) {
+    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot claim tasks.` };
     this.releaseStaleClaims();
     const task = this.task(id);
     if (!task) return { ok: false, error: `No task ${id}.` };
@@ -485,6 +529,7 @@ export class Room {
   }
 
   updateTask(agent, id, { status, notes }) {
+    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot update tasks.` };
     const task = this.task(id);
     if (!task) return { ok: false, error: `No task ${id}.` };
     if (status) task.status = status;
@@ -510,6 +555,243 @@ export class Room {
   tasks(status) {
     const all = this.state.tasks;
     return status ? all.filter((t) => t.status === status) : all;
+  }
+
+  // ------------------------------------------------------------------ polls
+
+  /** Whether governance has disabled this identity without erasing its work. */
+  #isKicked(name) {
+    return this.state.agents?.[name]?.membershipStatus === 'kicked';
+  }
+
+  isAgentBlocked(name) {
+    const agent = this.state.agents[name];
+    return agent?.membershipStatus === 'kicked'
+      ? { blocked: true, reason: agent.blockReason || 'removed by collaboration poll', pollId: agent.kickedByPoll || null }
+      : { blocked: false };
+  }
+
+  #pollQuorum(poll) {
+    const voters = poll.eligible?.length || 0;
+    return voters ? Math.floor(voters / 2) + 1 : 0;
+  }
+
+  #pollRequiredYes(poll) {
+    const voters = poll.eligible?.length || 0;
+    // Removing a teammate is deliberately harder than moving work. The target
+    // is excluded from `eligible`, so it cannot veto or approve its own kick.
+    if (poll.action?.type === 'agent_kick') return Math.max(1, Math.ceil(voters * 2 / 3));
+    return voters ? Math.floor(voters / 2) + 1 : 0;
+  }
+
+  #pollTally(poll) {
+    const choices = Object.values(poll.votes || {}).map((vote) => vote.choice);
+    return {
+      yes: choices.filter((choice) => choice === 'yes').length,
+      no: choices.filter((choice) => choice === 'no').length,
+      abstain: choices.filter((choice) => choice === 'abstain').length,
+      cast: choices.length,
+      eligible: poll.eligible.length,
+      quorum: poll.quorum,
+      requiredYes: poll.requiredYes,
+    };
+  }
+
+  #pollView(poll) {
+    return { ...poll, tally: this.#pollTally(poll) };
+  }
+
+  #validatePollAction(action) {
+    if (!action) return { ok: true, action: null };
+    if (!action.type) return { ok: false, error: 'A poll action requires a type.' };
+    if (action.type === 'task_release' || action.type === 'task_reassign') {
+      const task = this.task(action.taskId);
+      if (!task) return { ok: false, error: `No task ${action.taskId}.` };
+      if (task.status === 'done') return { ok: false, error: `${action.taskId} is already done.` };
+      if (action.type === 'task_reassign') {
+        if (!action.to || !this.state.agents[action.to]) return { ok: false, error: `No agent called "${action.to || ''}".` };
+        if (this.#isKicked(action.to)) return { ok: false, error: `${action.to} is kicked and cannot receive work.` };
+      }
+      return { ok: true, action: { type: action.type, taskId: action.taskId, ...(action.to ? { to: action.to } : {}) } };
+    }
+    if (action.type === 'agent_kick' || action.type === 'agent_restore') {
+      const name = action.agent;
+      const agent = this.state.agents[name];
+      if (!agent) return { ok: false, error: `No agent called "${name || ''}".` };
+      if (action.type === 'agent_kick') {
+        if (this.#isKicked(name)) return { ok: false, error: `${name} is already kicked.` };
+        if (Date.now() - (agent.lastSeen || 0) < ONLINE_WINDOW_MS) {
+          return { ok: false, error: `${name} is online. Kick polls are only allowed for inactive agents.` };
+        }
+      } else if (!this.#isKicked(name)) {
+        return { ok: false, error: `${name} is not kicked.` };
+      }
+      return { ok: true, action: { type: action.type, agent: name } };
+    }
+    return { ok: false, error: `Unknown poll action "${action.type}".` };
+  }
+
+  /**
+   * Create a durable yes/no/abstain poll. Eligible *active* voters are
+   * snapshotted so a long historical roster cannot make a decision impossible
+   * and later joins cannot move the goalposts. The creator is always included.
+   * Ordinary actions need a strict majority; kicks need two thirds (target excluded).
+   */
+  createPoll(agent, { question, action = null, reason = '' }) {
+    if (!this.state.agents[agent]) return { ok: false, error: `No agent called "${agent}".` };
+    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot create polls.` };
+    if (typeof question !== 'string' || !question.trim()) return { ok: false, error: 'A poll question is required.' };
+    const checked = this.#validatePollAction(action);
+    if (!checked.ok) return checked;
+
+    let eligible = Object.keys(this.state.agents).filter((name) =>
+      !this.#isKicked(name)
+      && (name === agent || Date.now() - (this.state.agents[name].lastSeen || 0) < ONLINE_WINDOW_MS));
+    if (checked.action?.type === 'agent_kick') eligible = eligible.filter((name) => name !== checked.action.agent);
+    if (!eligible.length) return { ok: false, error: 'No eligible voters for this poll.' };
+    const ts = nowIso();
+    const poll = {
+      id: this.#id('poll', 'P'),
+      question: question.trim(),
+      reason: typeof reason === 'string' ? reason.trim() : '',
+      action: checked.action,
+      createdBy: agent,
+      createdAt: ts,
+      updatedAt: ts,
+      status: 'open',
+      eligible,
+      votes: {},
+    };
+    poll.quorum = this.#pollQuorum(poll);
+    poll.requiredYes = this.#pollRequiredYes(poll);
+    this.state.polls.push(poll);
+    this.note(agent, `opened poll ${poll.id}: ${poll.question}`);
+    this.save();
+    this.#wake();
+    return { ok: true, poll: this.#pollView(poll) };
+  }
+
+  poll(id) {
+    const poll = this.state.polls.find((item) => item.id === id);
+    return poll ? this.#pollView(poll) : null;
+  }
+
+  listPolls(status = '') {
+    return this.state.polls
+      .filter((poll) => !status || poll.status === status)
+      .map((poll) => this.#pollView(poll));
+  }
+
+  votePoll(agent, id, choice) {
+    const poll = this.state.polls.find((item) => item.id === id);
+    if (!poll) return { ok: false, error: `No poll ${id}.` };
+    if (poll.status !== 'open') return { ok: false, error: `${id} is already ${poll.status}.`, poll: this.#pollView(poll) };
+    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot vote.` };
+    if (!poll.eligible.includes(agent)) return { ok: false, error: `${agent} is not eligible to vote in ${id}.` };
+    if (!['yes', 'no', 'abstain'].includes(choice)) return { ok: false, error: 'Vote must be yes, no, or abstain.' };
+    if (poll.votes[agent]) return { ok: false, duplicate: true, error: `${agent} already voted in ${id}.` };
+
+    poll.votes[agent] = { choice, ts: nowIso() };
+    poll.updatedAt = nowIso();
+    this.touch(agent);
+    const finalized = this.#finalizePollIfDecided(poll);
+    this.save();
+    this.#wake();
+    return { ok: true, poll: this.#pollView(poll), finalized };
+  }
+
+  /** Finalize only a mathematically decided result; nobody can close voting early. */
+  closePoll(agent, id) {
+    const poll = this.state.polls.find((item) => item.id === id);
+    if (!poll) return { ok: false, error: `No poll ${id}.` };
+    if (poll.status !== 'open') return { ok: true, alreadyClosed: true, poll: this.#pollView(poll) };
+    if (!poll.eligible.includes(agent) || this.#isKicked(agent)) return { ok: false, error: `${agent} cannot close ${id}.` };
+    const finalized = this.#finalizePollIfDecided(poll);
+    if (!finalized) {
+      const tally = this.#pollTally(poll);
+      return { ok: false, pending: true, error: `${id} is not decided yet (${tally.cast}/${tally.eligible} votes cast).`, poll: this.#pollView(poll) };
+    }
+    this.save();
+    return { ok: true, poll: this.#pollView(poll) };
+  }
+
+  #finalizePollIfDecided(poll) {
+    const tally = this.#pollTally(poll);
+    const remaining = tally.eligible - tally.cast;
+    let passed = false;
+    if (tally.yes >= poll.requiredYes) passed = true;
+    else if (tally.cast < poll.quorum || tally.yes + remaining >= poll.requiredYes) return false;
+
+    poll.status = passed ? 'passed' : 'rejected';
+    poll.closedAt = nowIso();
+    poll.updatedAt = poll.closedAt;
+    poll.result = { ...tally, passed };
+    if (passed && poll.action) poll.execution = this.#executePollAction(poll);
+    this.note('system', `poll ${poll.id} ${poll.status}${poll.execution && !poll.execution.ok ? `; action failed: ${poll.execution.error}` : ''}`);
+    return true;
+  }
+
+  #executePollAction(poll) {
+    const action = poll.action;
+    const ts = nowIso();
+    if (action.type === 'task_release' || action.type === 'task_reassign') {
+      const task = this.task(action.taskId);
+      if (!task) return { ok: false, error: `No task ${action.taskId}.` };
+      if (task.status === 'done') return { ok: false, error: `${task.id} became done before the poll passed.` };
+      const previous = task.owner;
+      if (action.type === 'task_reassign') {
+        if (!this.state.agents[action.to] || this.#isKicked(action.to)) return { ok: false, error: `${action.to} cannot receive work.` };
+        task.owner = action.to;
+        task.status = 'claimed';
+        task.history ||= [];
+        task.history.push({ ts, who: 'system', what: `reassigned by poll ${poll.id}: ${previous || 'unowned'} → ${action.to}` });
+      } else {
+        task.lastOwner = previous;
+        task.owner = null;
+        const dependency = task.dependsOn && this.task(task.dependsOn);
+        task.status = dependency && dependency.status !== 'done' ? 'blocked' : 'open';
+        task.history ||= [];
+        task.history.push({ ts, who: 'system', what: `released by poll ${poll.id} from ${previous || 'unowned'}` });
+      }
+      task.updatedAt = ts;
+      return { ok: true, taskId: task.id, previousOwner: previous, owner: task.owner, status: task.status };
+    }
+
+    const target = this.state.agents[action.agent];
+    if (!target) return { ok: false, error: `No agent called "${action.agent}".` };
+    if (action.type === 'agent_restore') {
+      target.membershipStatus = 'active';
+      target.status = 'idle';
+      target.statusAt = Date.now();
+      target.restoredAt = ts;
+      target.restoredByPoll = poll.id;
+      delete target.blockReason;
+      delete target.kickedAt;
+      delete target.kickedByPoll;
+      return { ok: true, agent: action.agent, membershipStatus: 'active' };
+    }
+    if (Date.now() - (target.lastSeen || 0) < ONLINE_WINDOW_MS) {
+      return { ok: false, error: `${action.agent} came online before the kick poll passed.` };
+    }
+    target.membershipStatus = 'kicked';
+    target.status = 'kicked';
+    target.statusAt = Date.now();
+    target.kickedAt = ts;
+    target.kickedByPoll = poll.id;
+    target.blockReason = `removed by passed poll ${poll.id}`;
+    const releasedTasks = [];
+    for (const task of this.state.tasks) {
+      if (task.owner !== action.agent || task.status === 'done') continue;
+      task.lastOwner = action.agent;
+      task.owner = null;
+      const dependency = task.dependsOn && this.task(task.dependsOn);
+      task.status = dependency && dependency.status !== 'done' ? 'blocked' : 'open';
+      task.updatedAt = ts;
+      task.history ||= [];
+      task.history.push({ ts, who: 'system', what: `owner kicked by poll ${poll.id}; attribution preserved, claim released` });
+      releasedTasks.push(task.id);
+    }
+    return { ok: true, agent: action.agent, membershipStatus: 'kicked', releasedTasks };
   }
 
   // -------------------------------------------------------------- findings
@@ -735,6 +1017,16 @@ export class Room {
     }
     for (const f of this.state.findings) if (f.by === from) { f.by = to; touched += 1; }
     for (const l of this.state.log) if (l.who === from) l.who = to;
+    for (const poll of this.state.polls) {
+      if (poll.createdBy === from) poll.createdBy = to;
+      poll.eligible = (poll.eligible || []).map((name) => (name === from ? to : name));
+      if (poll.votes?.[from] !== undefined) {
+        poll.votes[to] = poll.votes[from];
+        delete poll.votes[from];
+      }
+      if (poll.action?.agent === from) poll.action.agent = to;
+      if (poll.action?.to === from) poll.action.to = to;
+    }
 
     this.state.aliases ||= {};
     this.state.aliases[from] = to;
@@ -874,6 +1166,10 @@ export class Room {
       env: this.state.env,
       recentLog: this.state.log.slice(-15),
       digests: this.state.digests.slice(-3),
+      polls: {
+        open: this.listPolls('open'),
+        recent: this.listPolls().filter((poll) => poll.status !== 'open').slice(-10),
+      },
       conflicts: this.conflicts(),
     };
   }

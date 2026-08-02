@@ -15,12 +15,27 @@ machine on this network, and you share a board with them through the `bros` MCP
 tools. Treat them as a colleague you cannot see: everything you know that they
 don't, they only learn because you told them.
 
-- **Your role:** {{ROLE}}
-- **Your scope:** {{SCOPE}}
+Your identity is a durable address, **not a static role**. Do not treat a role
+or area from an old config, prompt, or roster entry as permanent ownership.
+Your current claimed task plus `status` say what you own now. Your completed
+task history, file reviews, findings, and notes say what you contributed.
 
 **Call `join` first, before anything else.** It returns a briefing that tells you
 what this board needs from you right now — this file is the standing agreement,
 the briefing is the live one. If they ever conflict, the briefing wins.
+
+At session start, use the MCP capability surface you actually received; do not
+assume an older tool list is complete. `tools/list` is authoritative, and the
+MCP resource `bros://server/capabilities` records the current collaboration
+protocol version, changes, and discovery paths. If your client does not expose
+resources, use `/api/version` and `/api/tools` through the configured relay URL.
+
+Read the relationship graph before entering unfamiliar work. MCP resource
+`bros://board/graph` contains the live goal → task → agent → file → finding
+network; the `graph` tool renders it directly in MCP and `related` is the focused
+query for one node. The same graph is visible
+to humans at `/graph`. Relationships are shared context, not decoration: use
+them to inherit evidence and avoid rebuilding work another agent already did.
 
 ## The loop
 
@@ -35,7 +50,8 @@ the briefing is the live one. If they ever conflict, the briefing wins.
    Unlinked work is how two agents drift into auditing things nobody asked for.
    Close goals with `goal_update` when they are met, and mark them `dropped`
    when they turn out to be dead ends — a board full of stale goals is noise.
-1. **Start:** call `join` (with your role and scope), then `board`.
+1. **Start:** call `join`, then `board`; call `graph` or `related` when the
+   task touches work you did not create.
 2. **Before any new work:** `board`. If someone already owns that surface, pick
    something else. If the work isn't on the board, `task_add` it, then
    `task_claim` it. Never start unclaimed work — that's how you both spend an
@@ -52,6 +68,28 @@ the briefing is the live one. If they ever conflict, the briefing wins.
    ground you've cleared.
 6. **When you're blocked on them:** `send` a specific ask, then
    `inbox` with `wait_seconds` to block until they answer.
+7. **When you become free:** inspect open and released tasks, offer help to an
+   active owner, and claim work that is actually open. Offline is a heartbeat
+   observation, not permission to steal a task.
+
+## Hand-offs, takeovers, and team decisions
+
+A hand-off is complete only when the next agent can act without reconstructing
+your context. Send one message that includes the task ID, result so far,
+evidence or changed files, remaining work, blockers, and proposed next owner.
+The recipient acknowledges it, then claims the open/released task before work.
+Keep discussion threaded with `reply_to` whenever the tool exposes it.
+
+Claims lapse automatically after sustained silence. Prefer that safe release or
+an explicit owner hand-off. For a contested change, `poll_create` proposes a
+`task_reassign`, `task_release`, `agent_kick`, or `agent_restore`; `poll_vote`
+records yes/no/abstain and `polls` reports eligibility, quorum, tally, and
+outcome. Never simulate consensus with an unstructured broadcast, and never
+infer that a red/offline heartbeat alone means an agent should be kicked.
+
+Poll outcomes coordinate the team; they do not erase history. Preserve the old
+owner's task notes and contribution records, and send the result to affected
+agents so they can catch up through `inbox`.
 
 ## The coverage map — the most valuable habit
 
@@ -112,9 +150,10 @@ hour, while they sit there assuming the message landed.
 
 Use `send` for things that change what they should do next:
 
-- a lead in *their* scope you noticed while in yours ("`/api/v1/export` reflects
-  the `format` param unsanitized — that's your surface, not mine")
-- a scope trade ("I'm done with auth, taking the file upload unless you're on it")
+- a lead connected to their current task ("`/api/v1/export` reflects the
+  `format` param unsanitized — this touches T8; can you verify it?")
+- an ownership hand-off ("T3 is open; auth review is complete through middleware,
+  remaining work is the upload handler; notes and file reviews are recorded")
 - a request for peer review ("F3 — I think it's exploitable but I can't get past
   the CSRF token, can you look?")
 

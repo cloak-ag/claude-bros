@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,34 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.1.0' };
+const COLLABORATION_PROTOCOL = {
+  version: '2026-08-02',
+  changes: [
+    'The relationship graph is available through the graph tool, bros://board/graph MCP resource, and related neighborhood queries.',
+    'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',
+    'Agents should check inbox between work units, acknowledge direct requests, and explicitly hand off work before a takeover.',
+    'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
+  ],
+};
+
+const capabilityDocument = () => {
+  const toolNames = TOOL_DEFS.map((tool) => tool.name).sort();
+  const capabilityHash = crypto.createHash('sha256')
+    .update(JSON.stringify({ protocol: COLLABORATION_PROTOCOL, tools: TOOL_DEFS }))
+    .digest('hex').slice(0, 12);
+  return {
+    server: SERVER_INFO,
+    capabilityHash,
+    collaborationProtocol: COLLABORATION_PROTOCOL,
+    tools: toolNames,
+    discovery: {
+      tools: 'MCP tools/list (or GET /api/tools)',
+      graph: 'MCP resources/read bros://board/graph (or GET /api/graph)',
+      reference: '/help',
+      version: '/api/version',
+    },
+  };
+};
 
 const json = (res, code, body, headers = {}) => {
   const payload = JSON.stringify(body);
@@ -95,7 +124,11 @@ async function handleRpc(room, agent, message, host = null) {
       const requested = params?.protocolVersion;
       return ok({
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          resources: { subscribe: false, listChanged: false },
+          experimental: { collaborationProtocol: COLLABORATION_PROTOCOL },
+        },
         serverInfo: SERVER_INFO,
         instructions:
           'You are collaborating with Claude Code agents on OTHER MACHINES through this relay. They are ' +
@@ -109,6 +142,13 @@ async function handleRpc(room, agent, message, host = null) {
               'fix the connection URL before doing work.\n\n') +
           'FIRST ACTION, ALWAYS: call `join`. It returns your full operating briefing and tells you exactly ' +
           'what this board needs next — do not start work before reading it.\n\n' +
+          `CAPABILITY BRIEF ${COLLABORATION_PROTOCOL.version}: inspect tools/list at session start; the relay may ` +
+          'gain tools without changing your identity. Read MCP resource `bros://server/capabilities` for the ' +
+          'current discovery map and changelog. Call `graph`, read `bros://board/graph`, or call `related` to understand ' +
+          'goal → task → agent → file → finding relationships before duplicating work.\n\n' +
+          'IDENTITY IS NOT A STATIC ROLE: describe current work with a claimed task and `status`. Past tasks, ' +
+          'file reviews, and findings are your contribution history. Do not treat legacy role/scope labels as ' +
+          'permanent ownership. Free agents should offer help, review hand-offs, and take released work.\n\n' +
           'The protocol in one line each:\n' +
           '- env_set: agree repo/commit/build before anything, or you may be auditing different code.\n' +
           '- goal_add / goals: agree what the engagement is for.\n' +
@@ -116,6 +156,9 @@ async function handleRpc(room, agent, message, host = null) {
           '- files / file_review: check coverage before opening a file; record every file you finish, clean ones included.\n' +
           '- finding_add: log evidence immediately; your partner reproduces and confirms it.\n' +
           '- status / send / inbox: say what you are doing, hand off leads, block on your partner when you must.\n\n' +
+          'COORDINATE CHANGES: acknowledge direct asks; include task/finding/file IDs in replies; send a concise ' +
+          'handoff with result, evidence, remaining work, and next owner. For a contested takeover or membership ' +
+          'decision, use `poll_create`, `poll_vote`, and `polls`; never improvise a vote in status text.\n\n' +
           'KEEP LISTENING: this relay cannot interrupt you. Call `inbox` between units of work — after each ' +
           'file, before each new task — not only when you are about to stop, and act on what arrives before ' +
           'continuing your own plan. A Stop hook will wake you if you try to finish with unread mail, but that ' +
@@ -144,9 +187,34 @@ async function handleRpc(room, agent, message, host = null) {
       }
     }
 
-    // Declared-but-empty capabilities keep strict clients from erroring out.
     case 'resources/list':
-      return ok({ resources: [] });
+      return ok({ resources: [
+        {
+          uri: 'bros://board/graph',
+          name: 'Current board relationship graph',
+          description: 'Goals, tasks, agents, files, and findings with their recorded and inferred relationships.',
+          mimeType: 'application/json',
+        },
+        {
+          uri: 'bros://server/capabilities',
+          name: 'Current relay capabilities and collaboration protocol',
+          description: 'Machine-readable discovery paths, tool inventory, protocol version, and concise changes.',
+          mimeType: 'application/json',
+        },
+      ] });
+    case 'resources/read': {
+      const uri = params?.uri;
+      if (uri === 'bros://board/graph') {
+        room.touch(agent);
+        return ok({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(buildGraph(room.state)) }] });
+      }
+      if (uri === 'bros://server/capabilities') {
+        room.touch(agent);
+        return ok({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(capabilityDocument()) }] });
+      }
+      return isNotification ? null : rpcError(id, -32002, `Resource not found: ${uri || '(missing uri)'}`);
+    }
+    // Declared-but-empty prompt capability keeps strict clients from erroring out.
     case 'prompts/list':
       return ok({ prompts: [] });
 
@@ -218,14 +286,20 @@ export function createServer({ room, token, quiet = false }) {
     // Version endpoint — public, so agents can poll for updates without auth
     if (url.pathname === '/api/version') {
       const toolNames = TOOL_DEFS.map((t) => t.name).sort();
-      const crypto = await import('node:crypto');
       const toolHash = crypto.createHash('sha256').update(toolNames.join(',')).digest('hex').slice(0, 12);
+      const capabilityHash = crypto.createHash('sha256')
+        .update(JSON.stringify({ protocol: COLLABORATION_PROTOCOL, tools: TOOL_DEFS }))
+        .digest('hex').slice(0, 12);
       return json(res, 200, {
         version: SERVER_INFO.version,
         name: SERVER_INFO.name,
+        collaborationProtocol: COLLABORATION_PROTOCOL,
         toolCount: toolNames.length,
         tools: toolNames,
         toolHash,
+        capabilityHash,
+        resources: ['bros://board/graph', 'bros://server/capabilities'],
+        graph: { ui: '/graph', api: '/api/graph', mcp: 'bros://board/graph' },
       });
     }
 

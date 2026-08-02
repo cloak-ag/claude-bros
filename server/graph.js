@@ -44,11 +44,25 @@ export function buildGraph(state) {
 
   for (const agent of Object.values(state.agents || {})) {
     const online = Date.now() - (agent.lastSeen || 0) < 90_000;
+    const currentTasks = (state.tasks || [])
+      .filter((task) => task.owner === agent.name && ['claimed', 'blocked'].includes(task.status));
+    const tasksTaken = (state.tasks || []).filter((task) =>
+      task.owner === agent.name
+      || task.lastOwner === agent.name
+      || (task.history || []).some((entry) => entry.who === agent.name && entry.what === 'claimed'));
+    const completed = tasksTaken.filter((task) => task.status === 'done');
     add({
       id: `agent:${agent.name}`, type: 'agent', label: agent.name,
       status: online ? 'good' : 'idle',
-      detail: agent.status || 'idle',
-      meta: { role: agent.role || '', online },
+      detail: currentTasks.length
+        ? `current: ${currentTasks.map((task) => `${task.id} ${task.title}`).join('; ')}`
+        : 'available — no current task',
+      meta: {
+        online,
+        currentTasks: currentTasks.map((task) => task.id),
+        tasksTaken: tasksTaken.map((task) => task.id),
+        completed: completed.map((task) => ({ id: task.id, title: task.title, notes: task.notes || '' })),
+      },
     });
   }
 
@@ -71,7 +85,11 @@ export function buildGraph(state) {
       meta: { state: task.status, owner: task.owner || null },
     });
     link(`task:${task.id}`, `goal:${task.goal}`, 'serves');
-    if (task.owner) link(`agent:${task.owner}`, `task:${task.id}`, 'owns');
+    if (task.owner) link(`agent:${task.owner}`, `task:${task.id}`, task.status === 'done' ? 'built' : 'working_on');
+    for (const entry of task.history || []) {
+      if (entry.what !== 'claimed' || entry.who === task.owner) continue;
+      link(`agent:${entry.who}`, `task:${task.id}`, 'worked_on');
+    }
     const dep = task.dependsOn || task.depends_on;
     if (dep) link(`task:${task.id}`, `task:${dep}`, 'depends');
   }

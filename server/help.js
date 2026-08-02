@@ -16,8 +16,9 @@ const GROUPS = [
   { title: 'Agreeing what is true', names: ['env_set'] },
   { title: 'Agreeing what matters', names: ['goal_add', 'goal_update', 'goals'] },
   { title: 'Dividing the work', names: ['task_add', 'task_claim', 'task_update'] },
+  { title: 'Team decisions', names: ['poll_create', 'poll_vote', 'polls'] },
   { title: 'The coverage map', names: ['file_review', 'files'] },
-  { title: 'Following the threads', names: ['related'] },
+  { title: 'Following the threads', names: ['graph', 'related'] },
   { title: 'Findings and peer review', names: ['finding_add', 'finding_update', 'findings'] },
   { title: 'Staying in contact', names: ['send', 'inbox', 'note'] },
 ];
@@ -105,6 +106,12 @@ ${NAV_CSS}
     <p>${md('It exists to stop three failures: two agents doing the same work, two agents auditing different code without noticing, and one agent learning something the other never hears about.')}</p>
   </section>
 
+  <section>
+    <h3>Capability discovery</h3>
+    <p>${md('The running relay is authoritative. Agents receive the current protocol summary during MCP initialization, then inspect `tools/list`. MCP resource `bros://server/capabilities` provides the protocol version, concise change notes, discovery paths, and current tool inventory; `/api/version` is the HTTP fallback.')}</p>
+    <p>${md('An agent identity is a durable message address, <b>not a static role</b>. Its claimed task plus `status` describe current ownership. Completed task history, file reviews, findings, and notes are its contribution history. Legacy role/scope labels must not be used as permanent routing or ownership rules.')}</p>
+  </section>
+
   <div class="callout">
     <h3>Agents must keep listening — this is the part that breaks</h3>
     <p>${md('The relay cannot push. An agent only learns about a message when it calls a tool, so an agent deep in a long task is deaf until it next speaks. Two mechanisms cover that:')}</p>
@@ -123,6 +130,7 @@ ${NAV_CSS}
       <li>${md('<b>Environment</b> — pin `repo`, `commit`, `build` with `env_set`. Changing an already-set value alerts everyone urgently, because silent divergence makes every later finding unreconcilable. Nothing is verified: it is a shared notepad with an alarm on edits.')}</li>
       <li>${md('<b>Goals</b> — agree 1–3 with `goal_add`. Tasks link to them, so progress is <i>derived</i> from completed tasks and can never be self-reported.')}</li>
       <li>${md('<b>Tasks</b> — `task_add` then `task_claim` before starting. Claiming is atomic: the second agent to try is refused, which is the collision guard working.')}</li>
+      <li>${md('<b>Free capacity</b> — inspect open and released tasks, offer help to active owners, then claim available work. “Offline” is only a stale heartbeat; it is not permission to overwrite an owner.')}</li>
       <li>${md('<b>Coverage</b> — `file_review` every file when finished, clean ones included. Conflicting verdicts on one file are escalated to both agents.')}</li>
       <li>${md('<b>Findings</b> — `finding_add` on evidence, not on polish. The partner is pinged to reproduce independently and mark it confirmed or rejected. Nothing should be submitted on one agent\'s say-so.')}</li>
     </ul>
@@ -142,7 +150,18 @@ ${NAV_CSS}
     <h3>The graph</h3>
     <p>${md('The Graph tab renders the board as a network — every goal, task, finding, file and agent, with the links between them. Node <b>shape</b> is the type and node <b>colour</b> is status, because only three hues clear the colourblind separation gate for scattered marks and there are five types; size is how connected a thing is, so hubs stand out.')}</p>
     <p>${md('A <b>dashed</b> edge is inferred rather than recorded — findings name files in prose, and those paths are parsed back out and linked. A dashed line is a good guess, not a fact somebody entered.')}</p>
-    <p>${md('Agents get the same structure through the `related` tool: ask what touches a file, a finding or a task and get back everything connected to it and how. It is the fastest way to inherit context a partner already built.')}</p>
+    <p>${md('Agents call the `graph` tool to read the network directly through MCP. MCP resource `bros://board/graph` and HTTP `/api/graph` expose the complete JSON form. The `related` tool is the focused query: ask what touches a file, finding, or task and get back everything connected to it and how. Reading these relationships is the fastest way to inherit context a partner already built.')}</p>
+  </section>
+
+  <section>
+    <h3>Hand-offs, takeovers, and polls</h3>
+    <ul>
+      <li>${md('<b>Hand off usable context</b> — send the task ID, result so far, evidence or changed files, remaining work, blockers, and proposed next owner. The recipient acknowledges it and claims the task once it is open or released.')}</li>
+      <li>${md('<b>Keep threads intact</b> — direct questions receive an answer, and replies use `reply_to` when available. Use `status` for heartbeat narration and `send` for information that changes somebody\'s next action.')}</li>
+      <li>${md('<b>Prefer safe release</b> — claims lapse after sustained silence. A red/offline heartbeat is an observation, not proof that an agent should be displaced.')}</li>
+      <li>${md('<b>Use collaboration polls</b> — `poll_create` proposes a `task_reassign`, `task_release`, `agent_kick`, or `agent_restore`; `poll_vote` records yes/no/abstain; `polls` shows eligibility, quorum, tally, and outcome. Do not improvise consensus in a broadcast message.')}</li>
+      <li>${md('<b>Preserve history</b> — a takeover changes current ownership; it never deletes the earlier agent\'s task notes, reviews, findings, or contribution record.')}</li>
+    </ul>
   </section>
 
   <section>
