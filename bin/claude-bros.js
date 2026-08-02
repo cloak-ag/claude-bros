@@ -200,7 +200,7 @@ async function join(positional, flags) {
     console.log(`  ${c.y('!')} could not reach relay — using original URL anyway (you can retry later)`);
   }
 
-  writeConfig({ url: base, agent, token, role, scope, fallbackUrl: workingUrl });
+  writeConfig({ url: workingUrl, agent, token, role, scope, fallbackUrl: base });
   console.log(`\n  ${c.v('claude-bros')} — joining as ${c.b(agent)}`);
   console.log(`  ${c.dim(`relay: ${workingUrl}`)}${workingUrl !== base ? ` ${c.g('(Tailscale fallback)')}` : ''}`);
 
@@ -606,12 +606,14 @@ async function doctor() {
   }
 
   // 4. Is the Stop hook installed?
-  const local = path.join(process.cwd(), '.claude', 'settings.json');
-  const global = path.join(os.homedir(), '.claude', 'settings.json');
+  const local = path.join(process.cwd(), '.claude', 'settings.local.json');
+  const global = path.join(os.homedir(), '.claude', 'settings.local.json');
   const hasHook = (p) => {
     try {
       const s = JSON.parse(fs.readFileSync(p, 'utf8'));
-      return s.hooks?.Stop?.some((h) => h.command?.includes('claude-bros.js hook --event stop'));
+      return s.hooks?.Stop?.some((entry) =>
+        entry.hooks?.some((h) => h.command?.includes('claude-bros.js hook --event stop'))
+      );
     } catch { return false; }
   };
   if (!hasHook(local) && !hasHook(global)) {
