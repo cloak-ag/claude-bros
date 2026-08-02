@@ -215,7 +215,7 @@ async function join(positional, flags) {
     console.log(`  ${c.g('✓')} MCP server "bros" registered for this directory`);
   }
 
-  const hooks = await installHooks(process.cwd());
+  const hooks = installHooks(process.cwd());
   if (hooks) {
     console.log(`  ${c.g('✓')} wake-up hooks ${hooks.changed ? 'installed in' : 'already present in'} ${path.relative(process.cwd(), hooks.settingsPath)}`);
   }
@@ -246,78 +246,135 @@ async function join(positional, flags) {
 
 // ---------------------------------------------------------------------- hook
 
-async function installHooks(cwd) {
-  const local = path.join(cwd, '.claude', 'settings.json');
-  const global = path.join(os.homedir(), '.claude', 'settings.json');
-  const targets = fs.existsSync(local) ? [local] : [global];
-  let changed = false;
-  let settingsPath = targets[0];
-
-  for (const target of targets) {
-    let settings = { hooks: {} };
+function installHooks(projectDir) {
+  const settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
+  let settings = {};
+  if (fs.existsSync(settingsPath)) {
     try {
-      settings = JSON.parse(fs.readFileSync(target, 'utf8'));
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     } catch {
-      settings = { hooks: {} };
+      console.log(c.y(`  ! ${settingsPath} is not valid JSON — skipping hook install.`));
+      return null;
     }
-    settings.hooks = settings.hooks || {};
-    settings.hooks.Stop = settings.hooks.Stop || [];
-    const hasOurs = settings.hooks.Stop.some(
-      (h) => h.command && h.command.includes('claude-bros.js hook --event stop'),
+  }
+
+  const cmd = `node ${path.join(ROOT, 'bin', 'claude-bros.js')} hook`;
+  settings.hooks ||= {};
+
+  const add = (event, command) => {
+    settings.hooks[event] ||= [];
+    const already = settings.hooks[event].some((entry) =>
+      (entry.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('claude-bros.js hook')),
     );
-    if (!hasOurs) {
-      settings.hooks.Stop.push({
-        command: `node ${path.join(ROOT, 'bin', 'claude-bros.js')} hook --event stop`,
-        matchers: [],
-      });
-      fs.writeFileSync(target, JSON.stringify(settings, null, 2));
-      changed = true;
-      settingsPath = target;
-    }
-  }
-  if (changed) return { changed, settingsPath };
-  return { changed: false, settingsPath };
+    if (already) return false;
+    settings.hooks[event].push({ hooks: [{ type: 'command', command, timeout: 10 }] });
+    return true;
+  };
+
+  const added = [add('Stop', `${cmd} --event stop`), add('SessionStart', `${cmd} --event session-start`)];
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return { settingsPath, changed: added.some(Boolean) };
 }
 
-function hook(flags) {
-  if (flags.event === 'stop') {
-    const config = readConfig();
-    if (!config || !config.url || !config.agent) {
-      console.log('[claude-bros] no config — run `claude-bros join` first');
-      return;
-    }
-    const base = config.url;
-    const agent = config.agent;
-    const token = config.token;
-    const params = new URLSearchParams({ agent });
-    if (token) params.set('token', token);
-    const url = `${base}/mcp?${params}`;
+async function hook(flags) {
+  // A hook must never break the session: any failure exits 0 and stays quiet.
+  const config = readConfig();
+  if (!config) process.exit(0);
 
-    // Quick inbox check
-    const res = spawnSync('node', ['-e', `
-      fetch(${JSON.stringify(url)}, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'inbox', arguments: { wait_seconds: 0 } } })
-      }).then(r => r.json()).then(j => {
-        const text = j.result?.content?.[0]?.text || '';
-        if (text.includes('No unread')) process.exit(0);
-        console.log(text.slice(0, 2000));
-        process.exit(0);
-      }).catch(e => { console.error(e); process.exit(1); });
-    `], { encoding: 'utf8', timeout: 5000 });
-    if (res.status === 0 && res.stdout.trim()) {
-      const text = res.stdout.trim();
-      if (!text.includes('No unread')) {
-        console.error(JSON.stringify({
-          decision: 'block',
-          reason: `[claude-bros] You have unread message(s) from your partner:\n${text}\n\nCall the bros inbox tool to read them properly, then act on them. If nothing there needs action, update your status and stop.`,
-        }));
-      }
-    }
+  let input = {};
+  try {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  } catch {
+    /* no stdin, carry on */
   }
-}
 
+  const q = new URLSearchParams({ agent: config.agent });
+  if (config.token) q.set('token', config.token);
+
+  const get = async (route) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const res = await fetch(`${config.url}${route}?${q}`, { signal: controller.signal });
+      return res.ok ? await res.json() : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (flags.event === 'session-start') {
+    const board = await get('/api/board');
+    if (!board) process.exit(0);
+    const peers = board.agents.filter((a) => a.name !== config.agent);
+    const context = [
+      `[claude-bros] You are agent "${config.agent}" on the shared board "${board.room}".`,
+      peers.length
+        ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'}) — ${p.status}`).join('; ')}`
+        : 'No partners have joined yet.',
+      `${board.tasks.open.length} open task(s), ${board.tasks.claimed.length} in progress, ${board.findings.length} finding(s).`,
+      board.unreadForYou ? `You have ${board.unreadForYou} unread message(s) — call the inbox tool.` : '',
+      'FIRST: call the bros `join` tool. It returns your full operating briefing for this engagement —',
+      'the shared environment, the goals, what the board needs next, and the rules. Do not start work before reading it.',
+    ].filter(Boolean).join('\n');
+
+    console.log(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
+    }));
+    process.exit(0);
+  }
+
+  // Stop: if mail is waiting, keep the agent awake so it can respond to its partner.
+  const unread = await get('/api/unread');
+  if (!unread?.count) process.exit(0);
+
+  const counterFile = path.join(CONFIG_DIR, 'wakeups.json');
+  let counters = {};
+  try {
+    counters = JSON.parse(fs.readFileSync(counterFile, 'utf8'));
+  } catch {
+    /* first run */
+  }
+  const key = input.session_id || 'default';
+  const entry = counters[key] || { count: 0, ts: 0 };
+  // Consecutive wake-ups only count within a short window; a quiet gap resets it.
+  if (Date.now() - entry.ts > 120_000) entry.count = 0;
+
+  // The cap stops a chatty partner looping you forever, but an URGENT message
+  // is the case the cap must not swallow.
+  const urgent = unread.messages.some((m) => m.urgent);
+  const limit = Number(process.env.BROS_MAX_WAKEUPS || 5);
+  if (entry.count >= limit && !urgent) process.exit(0);
+
+  entry.count += 1;
+  entry.ts = Date.now();
+  counters[key] = entry;
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(counterFile, JSON.stringify(counters));
+  } catch {
+    /* best effort */
+  }
+
+  const preview = unread.messages
+    .slice(0, 5)
+    .map((m) => `- ${m.from}${m.urgent ? ' (URGENT)' : ''}: ${m.text.slice(0, 300)}`)
+    .join('\n');
+
+  console.log(JSON.stringify({
+    decision: 'block',
+    reason:
+      `[claude-bros] ${urgent ? '** URGENT ** ' : ''}${unread.count} unread message(s) from your partner:\n${preview}\n\n` +
+      (urgent ? 'At least one is URGENT — deal with it before anything else, and reply so they know you saw it.\n' : '') +
+      'Call the bros inbox tool to read them properly, then act on them. ' +
+      'If nothing there needs action, update your status and stop.',
+  }));
+  process.exit(0);
+}
 // --------------------------------------------------------------------- CLI
 
 // The subcommand is its own token, removed before parsing — handlers expect
@@ -335,7 +392,7 @@ switch (command) {
     await join(positional, flags);
     break;
   case 'hook':
-    hook(flags);
+    await hook(flags);
     break;
   case 'rename':
     await rename(positional);

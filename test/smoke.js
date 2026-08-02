@@ -388,8 +388,8 @@ const osMod = await import('node:os');
 const fsMod = await import('node:fs');
 const pathMod = await import('node:path');
 const cli = pathMod.join(import.meta.dirname, '..', 'bin', 'claude-bros.js');
-const runCli = (args, envHome) => new Promise((resolve) => {
-  const child = spawn('node', [cli, ...args], { env: { ...process.env, HOME: envHome } });
+const runCli = (args, envHome, cwd) => new Promise((resolve) => {
+  const child = spawn('node', [cli, ...args], { env: { ...process.env, HOME: envHome }, cwd });
   let out = '';
   let err = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -397,8 +397,11 @@ const runCli = (args, envHome) => new Promise((resolve) => {
   child.on('close', (code) => resolve({ code, out, err }));
 });
 
+// The join CLI installs hooks into `.claude/settings.local.json` — sandbox the
+// cwd so the test never touches a real repo's settings file.
 const sandbox = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-cli-'));
-const j = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox);
+fsMod.mkdirSync(pathMod.join(sandbox, '.claude'), { recursive: true });
+const j = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
 let cliCfg = null;
 try {
   cliCfg = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude-bros', 'config.json'), 'utf8'));
@@ -407,6 +410,28 @@ check('join records the real relay URL, not the command name',
   cliCfg?.url === 'http://cli-test.invalid:7777', JSON.stringify(cliCfg));
 check('join still passes its --as and --token through', cliCfg?.agent === 'cliagent' && cliCfg?.token === 't');
 check('join exits cleanly even when the relay is unreachable', j.code === 0, j.out + j.err);
+// Regression for the SessionStart hook being dropped in the CLI rewrite: join
+// must install BOTH hook events, into the project-scoped settings.local.json.
+let hookSettings = null;
+try {
+  hookSettings = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), 'utf8'));
+} catch {}
+const hookEvents = Object.keys(hookSettings?.hooks || {});
+check('join installs the Stop hook', hookEvents.includes('Stop'), JSON.stringify(hookEvents));
+check('join installs the SessionStart hook too', hookEvents.includes('SessionStart'), JSON.stringify(hookEvents));
+check('hook commands carry the right event flag',
+  hookSettings?.hooks?.Stop?.[0]?.hooks?.[0]?.command.includes('--event stop') &&
+  hookSettings?.hooks?.SessionStart?.[0]?.hooks?.[0]?.command.includes('--event session-start'),
+  JSON.stringify(hookSettings?.hooks));
+// ...and a second join does not duplicate the entries.
+const j2 = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
+let hookSettings2 = null;
+try {
+  hookSettings2 = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), 'utf8'));
+} catch {}
+check('a second join does not duplicate hooks',
+  hookSettings2?.hooks?.Stop?.length === 1 && hookSettings2?.hooks?.SessionStart?.length === 1,
+  JSON.stringify(hookSettings2?.hooks?.Stop?.length));
 
 const sendHome = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-send-'));
 fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });
