@@ -17,6 +17,11 @@ const upstream = http.createServer((req, res) => {
       auth: req.headers.authorization, legacyHeader: req.headers['x-bros-token'],
       cookie: req.headers.cookie, body: Buffer.concat(chunks).toString('utf8'),
     };
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      // The real dashboard is HTML and embeds its own token in its links.
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><html><body><a href="/?token=${newToken}">board</a></body></html>`);
+    }
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end('{"ok":true,"room":"bounty"}');
@@ -51,14 +56,17 @@ check(preflight.status === 204 && preflight.headers.get('access-control-allow-or
   'CORS preflight remains credential-free and compatible');
 check(upstreamHits === 1, 'CORS preflight is answered locally');
 
+// The dashboard must actually work from the legacy address. A static notice
+// here left the local board dead and its one link unusable, so browser routes
+// are proxied like everything else.
+const hitsBeforePage = upstreamHits;
 const page = await fetch(`${base}/?token=${oldToken}`);
 const pageBody = await page.text();
-check(pageBody.includes('forwarded automatically') && !pageBody.includes(newToken), 'browser route is a safe local notice');
-check(upstreamHits === 1, 'browser route cannot leak upstream HTML');
-const indexPage = await (await fetch(`${base}/index.html?token=${oldToken}`)).text();
-check(indexPage.includes('names are preserved exactly') && !indexPage.includes(newToken),
-  'index.html is also a safe local migration notice');
-check(upstreamHits === 1, 'index.html never reaches the token-rendering upstream dashboard');
+check(upstreamHits === hitsBeforePage + 1, 'browser route is proxied, not stubbed');
+check(!pageBody.includes(newToken), 'canonical token never reaches the browser');
+check(pageBody.includes(new URL(canonical).origin), 'proxied page names the canonical relay');
+check(pageBody.includes(`token=${oldToken}`),
+  'the dashboard\'s own links are rewritten to the legacy token, so they work through the bridge');
 
 const payload = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
 const configuredAgent = 'existing-agent-name';
@@ -74,8 +82,12 @@ check(upstreamRequest.agent === configuredAgent, 'configured agent identity pres
 check(upstreamRequest.token === null && upstreamRequest.auth === `Bearer ${newToken}`, 'credential translated outside URL');
 check(!upstreamRequest.legacyHeader && !upstreamRequest.cookie, 'untrusted credential headers stripped');
 check(upstreamRequest.body === payload, 'request body preserved');
-check(forwardedBody.renderedLink.includes('[redacted]') && !JSON.stringify(forwardedBody).includes(newToken),
-  'new credential never leaks downstream');
+// Redacting the upstream's own token broke every link it rendered. It is now
+// swapped for the legacy credential the client already holds, which keeps those
+// links working through the bridge while the canonical one still never appears.
+check(!JSON.stringify(forwardedBody).includes(newToken), 'new credential never leaks downstream');
+check(forwardedBody.renderedLink.includes(`token=${oldToken}`),
+  'upstream-rendered links are rewritten to the legacy credential, not blanked');
 
 await new Promise((resolve) => proxy.close(resolve));
 await new Promise((resolve) => upstream.close(resolve));
@@ -118,4 +130,4 @@ await new Promise((resolve) => upstream.close(resolve));
 
   bridge.close(); strict.close(); upstream.close();
 }
-console.log('migration proxy: 24 checks passed');
+console.log('migration proxy: 23 checks passed');

@@ -46,7 +46,12 @@ export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet =
       || presents(req.headers['x-bros-token']);
   };
 
-  const migrationPage = `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>claude-bros migrated</title><style>body{font:16px system-ui;max-width:760px;margin:12vh auto;padding:24px;line-height:1.5}code{background:#eee;padding:2px 5px}</style><h1>This relay migrated</h1><p>Existing MCP, REST, and hook clients are forwarded automatically. Their configured agent names are preserved exactly; no prompt, rename, or configuration change is required.</p><p>Canonical relay: <a href="${canonical.origin}">${canonical.origin}</a></p><p>New installations should join the canonical HTTPS URL with the current relay token and a unique, durable agent name.</p>`;
+  // A banner is injected into proxied HTML so it is obvious the board is served
+  // from the canonical relay, without replacing the working dashboard with a
+  // dead end. The canonical link carries no token by design.
+  const banner = `<div style="font:13px/1.5 system-ui;background:#1c2b3a;color:#cfe3ff;border-bottom:1px solid #2c4a68;padding:7px 14px">`
+    + `Served from the migrated relay · <a style="color:#8ab8ff" href="${canonical.origin}">${canonical.origin}</a>`
+    + `<span style="opacity:.65"> — this legacy address keeps working; new installs should join the canonical URL.</span></div>`;
 
   return http.createServer((req, res) => {
     const incoming = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -67,18 +72,6 @@ export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet =
       return res.end(JSON.stringify({
         error: 'Bad or missing token.', migrated: true, canonicalUrl: canonical.origin,
       }));
-    }
-
-    if (browserRoute) {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Content-Length': Buffer.byteLength(migrationPage),
-        'Cache-Control': 'no-store',
-        'Referrer-Policy': 'no-referrer',
-        Link: `<${canonical.origin}>; rel="canonical"`,
-        'X-Claude-Bros-Migrated-To': canonical.origin,
-      });
-      return res.end(migrationPage);
     }
 
     incoming.searchParams.delete('token');
@@ -108,7 +101,15 @@ export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet =
       const chunks = [];
       upstreamRes.on('data', (chunk) => chunks.push(chunk));
       upstreamRes.on('end', () => {
-        let body = Buffer.concat(chunks).toString('utf8').split(newToken).join('[redacted]');
+        // The upstream dashboard embeds its own token in nav links and fetches.
+        // Redacting it would break every link; swapping it for the legacy token
+        // keeps them working through this bridge and still means the canonical
+        // credential never appears in a response. The client already sent the
+        // legacy token to get here, so this reveals nothing new to it.
+        let body = Buffer.concat(chunks).toString('utf8').split(newToken).join(oldToken);
+        if (/text\/html/i.test(responseHeaders['content-type'] || '')) {
+          body = body.replace(/<body[^>]*>/i, (tag) => tag + banner);
+        }
         if (incoming.pathname === '/healthz' || incoming.pathname === '/api/version') {
           try {
             const parsed = JSON.parse(body);
