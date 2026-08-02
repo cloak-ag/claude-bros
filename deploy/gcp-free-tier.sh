@@ -67,7 +67,8 @@ if gcloud compute addresses describe "$ADDRESS_NAME" --region="$REGION" >/dev/nu
     exit 1
   fi
 else
-  gcloud compute addresses create "$ADDRESS_NAME" --region="$REGION" --addresses="$INSTANCE_IP"
+  gcloud compute addresses create "$ADDRESS_NAME" --region="$REGION" \
+    --addresses="$INSTANCE_IP" --network-tier=STANDARD
   PUBLIC_IP="$INSTANCE_IP"
 fi
 PUBLIC_HOST="${PUBLIC_HOST:-claude-bros.${PUBLIC_IP//./-}.sslip.io}"
