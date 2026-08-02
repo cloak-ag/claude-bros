@@ -11,7 +11,7 @@
   },
   "scripts": {
     "serve": "node bin/claude-bros.js serve",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js && node test/migration-proxy.js"
   },
   "license": "MIT",
   "private": true,
