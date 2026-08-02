@@ -458,6 +458,10 @@ console.log('\n  persistence layer');
   check('a missing DATABASE_URL says so plainly', msg.includes('DATABASE_URL is not set'), msg);
 }
 
+check('serve honours BROS_ROOM, which the deploy configs set',
+  /flags\.room \|\| process\.env\.BROS_ROOM/.test(
+    (await import('node:fs')).readFileSync(new URL('../bin/claude-bros.js', import.meta.url), 'utf8')));
+
 console.log('\n  egress: compression and revalidation');
 {
   const url = `${base}/api/state?token=${TOKEN}`;

@@ -76,7 +76,8 @@ async function serve(flags) {
   // Cloud Run injects PORT, we also support BROS_PORT for local override
   const port = Number(flags.port || process.env.PORT || process.env.BROS_PORT || 7777);
   const host = flags.host || '0.0.0.0';
-  const name = flags.room || 'bounty';
+  // cloudrun.yaml and the systemd unit both set BROS_ROOM; honour it.
+  const name = flags.room || process.env.BROS_ROOM || 'bounty';
   const dataFile = flags.data || path.join(ROOT, 'data', `${name}.json`);
   // Token priority: --no-token > --token > BROS_TOKEN env > auto-generate
   let token = null;
