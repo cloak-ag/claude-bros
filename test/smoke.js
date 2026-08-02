@@ -436,6 +436,17 @@ console.log('\n  persistence layer');
   r.note('tester', 'write a private state file');
   await new Promise((resolve) => setTimeout(resolve, 350));
   check('file-backed state is owner-only', (fsFile.statSync(file).mode & 0o777) === 0o600);
+
+  const staleFile = pathFile.join(dir, 'stale-presence.json');
+  fsFile.writeFileSync(staleFile, JSON.stringify({
+    room: 'restored',
+    agents: { alpha: { name: 'alpha', lastSeen: Date.now(), hosts: ['old-relay', 'old-client'] } },
+  }));
+  const restored = new Room({ name: 'restored', file: staleFile });
+  check('file restore clears stale endpoint hosts without renaming the agent',
+    restored.state.agents.alpha.name === 'alpha' &&
+    restored.state.agents.alpha.lastSeen === 0 &&
+    restored.state.agents.alpha.hosts.length === 0);
   fsFile.rmSync(dir, { recursive: true });
 }
 // A fake persistence layer stands in for Postgres: the contract is load/save,
@@ -444,11 +455,13 @@ console.log('\n  persistence layer');
   const saved = [];
   let failNext = false;
   const fake = {
-    load: async () => ({ room: 'p', messages: [{ id: 'M1', seq: 1, from: 'a', to: 'all', text: 'from the db', ts: new Date().toISOString(), readBy: {} }], counters: { message: 1, seq: 1 } }),
+    load: async () => ({ room: 'p', agents: { a: { name: 'a', lastSeen: Date.now(), hosts: ['old-db-host'] } }, messages: [{ id: 'M1', seq: 1, from: 'a', to: 'all', text: 'from the db', ts: new Date().toISOString(), readBy: {} }], counters: { message: 1, seq: 1 } }),
     save: async (name, state) => { if (failNext) throw new Error('connection reset'); saved.push(state.messages.length); },
   };
   const r = await new Room({ name: 'p', file: null, persistence: fake }).init();
   check('state loads from the persistence layer', r.state.messages[0]?.text === 'from the db');
+  check('database restore also clears stale endpoint presence',
+    r.state.agents.a.lastSeen === 0 && r.state.agents.a.hosts.length === 0);
   check('an in-memory room with no file does not error on init',
     (await new Room({ name: 'mem', file: null }).init()).state.messages.length === 0);
 

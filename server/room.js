@@ -59,7 +59,7 @@ export class Room {
       const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
       this.#repairIds();
-      for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+      this.#resetPresence();
     } catch (err) {
       console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
     }
@@ -72,7 +72,7 @@ export class Room {
       if (state) {
         this.state = { ...this.state, ...state, counters: { ...this.state.counters, ...(state.counters || {}) } };
         this.#repairIds();
-        for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+        this.#resetPresence();
         return this;
       }
     }
@@ -83,11 +83,25 @@ export class Room {
       const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
       this.#repairIds();
-      for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+      this.#resetPresence();
     } catch (err) {
       console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
     }
     return this;
+  }
+
+  /**
+   * Presence is process-local, not historical board data. A saved host says
+   * only where an identity connected before the last restart; retaining it
+   * makes a restored or migrated board report false name clashes as soon as
+   * the same agent reaches the new relay. Active endpoints repopulate this on
+   * their next request, so real simultaneous collisions are still detected.
+   */
+  #resetPresence() {
+    for (const agent of Object.values(this.state.agents)) {
+      agent.lastSeen = 0;
+      agent.hosts = [];
+    }
   }
 
   save() {
