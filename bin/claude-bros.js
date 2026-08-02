@@ -141,7 +141,7 @@ function serve(flags) {
 
 // ---------------------------------------------------------------------- join
 
-function join(positional, flags) {
+async function join(positional, flags) {
   const base = (positional[0] || flags.url || '').replace(/\/+$/, '').replace(/\/mcp$/, '');
   const agent = flags.as || flags.agent;
   if (!base || !agent) {
@@ -215,7 +215,7 @@ function join(positional, flags) {
     console.log(`  ${c.g('✓')} MCP server "bros" registered for this directory`);
   }
 
-  const hooks = installHooks(process.cwd());
+  const hooks = await installHooks(process.cwd());
   if (hooks) {
     console.log(`  ${c.g('✓')} wake-up hooks ${hooks.changed ? 'installed in' : 'already present in'} ${path.relative(process.cwd(), hooks.settingsPath)}`);
   }
@@ -320,15 +320,19 @@ function hook(flags) {
 
 // --------------------------------------------------------------------- CLI
 
-const { flags, positional } = parseArgs(process.argv.slice(2));
-const cmd = positional[0];
+// The subcommand is its own token, removed before parsing — handlers expect
+// positional[0] to be the first real argument, not the command name. Leaving
+// the command in positional made `join` read base="join", `send` prepend
+// "send " to every message, and `rename`/`forget` target the wrong agent.
+const [command, ...rest] = process.argv.slice(2);
+const { flags, positional } = parseArgs(rest);
 
-switch (cmd) {
+switch (command) {
   case 'serve':
     serve(flags);
     break;
   case 'join':
-    join(positional, flags);
+    await join(positional, flags);
     break;
   case 'hook':
     hook(flags);
