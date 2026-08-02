@@ -13,7 +13,9 @@ spec:
         autoscaling.knative.dev/minScale: "1"
         autoscaling.knative.dev/maxScale: "1"
         # CPU only while handling requests (cost optimization)
-        run.googleapis.com/cpu-throttling: "true"
+        # Must stay allocated: state writes are debounced on a timer, and a
+        # throttled instance gets no CPU between requests to run it.
+        run.googleapis.com/cpu-throttling: "false"
         # Memory for Node + state file
         run.googleapis.com/memory: "512Mi"
         # 5 min request timeout (long-polling inbox waits up to 2 min)
@@ -38,6 +40,15 @@ spec:
             # Optional: Tailscale not needed on Cloud Run (public HTTPS)
             - name: BROS_NO_TAILSCALE_NOTE
               value: "true"
+            # Postgres persistence. Without it the board lives in the container
+            # filesystem and is lost when the instance recycles. Optional so a
+            # deploy still succeeds before the secret is created.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bros-database-url
+                  key: url
+                  optional: true
           resources:
             limits:
               cpu: "1000m"

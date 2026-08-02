@@ -3,3 +3,10 @@ MY-SETUP.md
 PARTNER-SETUP.md
 data/*.json
 data/*.json.tmp
+node_modules/
+BROS.md
+*.tmp
+
+# local review notes, not part of the project
+PR1-REVIEW.md
+PR1-COMMENT.md
