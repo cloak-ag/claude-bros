@@ -48,6 +48,10 @@ const init = await rpc('alpha', 'initialize', {
 });
 check('initialize returns a protocol version', init.result?.protocolVersion === '2025-06-18', JSON.stringify(init));
 check('server identifies itself', init.result?.serverInfo?.name === 'claude-bros');
+check('initialization briefing is client-neutral and self-bootstrapping',
+  ['Claude', 'Codex', 'Grok', 'FIRST ACTION, ALWAYS'].every((text) => init.result?.instructions?.includes(text)));
+check('initialize records client implementation without making it a role',
+  room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
 check('tools/list exposes the full surface', tools.result.tools.length === 24, `got ${tools.result.tools.length}`);
@@ -55,17 +59,31 @@ check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.
 check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
   .every((name) => tools.result.tools.some((tool) => tool.name === name)));
 const resources = await rpc('alpha', 'resources/list');
-check('MCP advertises graph and capability resources', ['bros://board/graph', 'bros://server/capabilities']
+check('MCP advertises graph, capability, and connection resources',
+  ['bros://board/graph', 'bros://server/capabilities', 'bros://server/connecting']
   .every((uri) => resources.result.resources.some((resource) => resource.uri === uri)));
+const templates = await rpc('alpha', 'resources/templates/list');
+check('resource template discovery is implemented for strict clients', Array.isArray(templates.result.resourceTemplates));
 const graphResource = await rpc('alpha', 'resources/read', { uri: 'bros://board/graph' });
 check('agents can read the graph without a browser', graphResource.result.contents[0].text.includes('"nodes"'));
 const capabilityResource = await rpc('alpha', 'resources/read', { uri: 'bros://server/capabilities' });
 check('agents can learn server changes without a prompt', capabilityResource.result.contents[0].text.includes('collaborationProtocol'));
+const connectingResource = await rpc('alpha', 'resources/read', { uri: 'bros://server/connecting' });
+check('agents can discover the client-neutral connection contract',
+  connectingResource.result.contents[0].text.includes('streamable-http'));
 
 console.log('\n  auth');
 const noToken = await fetch(`${base}/mcp?agent=alpha`, { method: 'POST', body: '{}' });
 check('requests without the token are rejected', noToken.status === 401);
 check('health check needs no token', (await (await fetch(`${base}/healthz`)).json()).ok === true);
+const bearer = await fetch(`${base}/mcp?agent=bearer-client`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'ping' }),
+});
+check('standard bearer authorization works without a query-string token', bearer.status === 200);
+check('public connection discovery needs no token',
+  (await (await fetch(`${base}/api/connect`)).json()).transport === 'streamable-http');
 const identityless = await fetch(`${base}/mcp?token=${TOKEN}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'initialize', params: {} }),
@@ -73,6 +91,34 @@ const identityless = await fetch(`${base}/mcp?token=${TOKEN}`, {
 const identitylessBody = await identityless.json();
 check('MCP rejects a missing configured identity clearly',
   identityless.status === 400 && identitylessBody.error?.message.includes('Do not guess'));
+const badVersion = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'MCP-Protocol-Version': '1900-01-01' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'ping' }),
+});
+check('unsupported MCP protocol headers are rejected', badVersion.status === 400);
+const getMcp = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`);
+check('stateless MCP GET clearly declines an SSE stream', getMcp.status === 405 && getMcp.headers.get('allow') === 'POST');
+const emptyBatch = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '[]',
+});
+check('empty JSON-RPC batches are invalid', emptyBatch.status === 400);
+const wrongType = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`, {
+  method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}',
+});
+check('Streamable HTTP rejects non-JSON request bodies', wrongType.status === 415);
+const hostileOrigin = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Origin: 'https://attacker.example' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'ping' }),
+});
+check('MCP rejects cross-origin browser requests to prevent DNS rebinding', hostileOrigin.status === 403);
+const sameOrigin = await fetch(`${base}/mcp?agent=alpha&token=${TOKEN}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Origin: base },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'ping' }),
+});
+check('same-origin browser MCP requests remain valid', sameOrigin.status === 200);
 
 console.log('\n  two agents');
 await call('alpha', 'join');
@@ -597,6 +643,8 @@ check('dashboard tab links carry the token and point at real routes',
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard separates active and archived work', pageText.includes('Active queue') && pageText.includes('Standing &amp; actionable'));
 check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));
+check('dashboard distinguishes MCP client implementation from agent role',
+  pageText.includes('Client: ') && pageText.includes('a.client.title || a.client.name'));
 check('coverage is a searchable full-width ledger', pageText.includes('coverage-filter') && pageText.includes('data-coverage-row'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 // Regression for the dashboard rewrite: esc() must actually escape (agent text is
@@ -631,6 +679,22 @@ const runCli = (args, envHome, cwd) => new Promise((resolve) => {
   child.stderr.on('data', (d) => { err += d; });
   child.on('close', (code) => resolve({ code, out, err }));
 });
+
+{
+  const secret = 'must-not-appear-in-generated-client-config';
+  const generated = await runCli([
+    'connect', `https://relay.example/?token=${secret}`, '--as', 'cross-client', '--client', 'all',
+  ], osMod.tmpdir(), process.cwd());
+  check('connect generates Claude, Codex, Grok, and generic MCP setup',
+    generated.code === 0
+      && generated.out.includes('.mcp.json')
+      && generated.out.includes('.codex/config.toml')
+      && generated.out.includes('grok.com/connectors')
+      && generated.out.includes('Streamable HTTP'));
+  check('connect preserves identity while removing legacy query tokens',
+    generated.out.includes('/mcp?agent=cross-client') && !generated.out.includes(`?token=${secret}`));
+  check('connect never echoes a supplied secret', !generated.out.includes(secret));
+}
 
 {
   const secret = 'do-not-write-this-token-to-service-logs';
