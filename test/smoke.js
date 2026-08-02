@@ -50,8 +50,17 @@ check('initialize returns a protocol version', init.result?.protocolVersion === 
 check('server identifies itself', init.result?.serverInfo?.name === 'claude-bros');
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 20, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 24, `got ${tools.result.tools.length}`);
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
+check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
+  .every((name) => tools.result.tools.some((tool) => tool.name === name)));
+const resources = await rpc('alpha', 'resources/list');
+check('MCP advertises graph and capability resources', ['bros://board/graph', 'bros://server/capabilities']
+  .every((uri) => resources.result.resources.some((resource) => resource.uri === uri)));
+const graphResource = await rpc('alpha', 'resources/read', { uri: 'bros://board/graph' });
+check('agents can read the graph without a browser', graphResource.result.contents[0].text.includes('"nodes"'));
+const capabilityResource = await rpc('alpha', 'resources/read', { uri: 'bros://server/capabilities' });
+check('agents can learn server changes without a prompt', capabilityResource.result.contents[0].text.includes('collaborationProtocol'));
 
 console.log('\n  auth');
 const noToken = await fetch(`${base}/mcp?agent=alpha`, { method: 'POST', body: '{}' });
@@ -66,15 +75,19 @@ check('MCP rejects a missing configured identity clearly',
   identityless.status === 400 && identitylessBody.error?.message.includes('Do not guess'));
 
 console.log('\n  two agents');
-await call('alpha', 'join', { role: 'static analysis', scope: 'auth + config' });
-await call('beta', 'join', { role: 'recon', scope: 'endpoints' });
+await call('alpha', 'join');
+await call('beta', 'join');
 const board = await call('alpha', 'board');
-check('alpha sees beta on the board', board.text.includes('beta') && board.text.includes('recon'));
+check('alpha sees beta on the board', board.text.includes('beta') && board.text.includes('available'));
 
 console.log('\n  task collision guard');
 await call('alpha', 'task_add', { title: 'Review password reset flow', scope: 'auth' });
 const claimed = await call('alpha', 'task_claim', { id: 'T1' });
 check('first claim succeeds', !claimed.isError && claimed.text.includes('You own T1'));
+await call('beta', 'inbox'); // collaboration event: see who claimed it before attempting overlap
+const tamper = await call('beta', 'task_update', { id: 'T1', status: 'open' });
+check('a non-owner cannot bypass governance by reopening another agent task',
+  tamper.isError && tamper.text.includes('task_reassign'));
 const stolen = await call('beta', 'task_claim', { id: 'T1' });
 check('second agent is blocked from the same task',
   stolen.isError && stolen.text.includes('being worked by alpha') && stolen.text.includes('last active'), stolen.text);
@@ -84,6 +97,7 @@ check('task can be completed', done.text.includes('now done'));
 console.log('\n  task dependencies');
 // T1 is already done above — so a task depending on it must be claimable right away.
 await call('alpha', 'task_add', { title: 'Verify the password reset fix', depends_on: 'T1' });
+await call('beta', 'inbox'); // consume the completed-task handoff before choosing the next task
 const depMet = await call('beta', 'task_claim', { id: 'T2' });
 check('a task whose dependency is done can be claimed', !depMet.isError, depMet.text);
 await call('alpha', 'task_add', { title: 'Exploit the password reset', scope: 'auth' });
@@ -93,6 +107,7 @@ check('a task with an unfinished dependency is rejected as blocked',
   depBlock.isError && depBlock.text.includes('depends on T3') && room.task('T4').status === 'blocked', depBlock.text);
 const depOpen = await call('alpha', 'task_update', { id: 'T3', status: 'done' });
 check('completing the dependency reopens the blocked task', room.task('T4').status === 'open', JSON.stringify(room.task('T4')));
+await call('beta', 'inbox'); // consume the dependency-complete broadcast
 
 console.log('\n  messaging');
 await call('beta', 'send', { text: 'Found a reflected param on /search', to: 'alpha' });
@@ -190,7 +205,7 @@ check('the sequence counter continues from the history', seqd.state.counters.seq
 (await import('node:fs')).unlinkSync(older);
 
 console.log('\n  join briefing');
-const fresh = await call('gamma', 'join', { role: 'tester' });
+const fresh = await call('gamma', 'join');
 check('the briefing names the agent', fresh.text.includes('You are exactly "gamma"'));
 check('the briefing makes connection identity authoritative',
   fresh.text.includes('sole source of truth') && fresh.text.includes('relay migrations'));
@@ -281,7 +296,7 @@ await call('alpha', 'task_claim', { id: survivor });
 const renamed = room.rename('alpha', 'renamed-agent');
 check('rename reports what it moved', renamed.ok && renamed.references > 0, JSON.stringify(renamed));
 check('the old name is gone', !room.state.agents.alpha);
-check('the new name inherits the record', room.state.agents['renamed-agent']?.role === 'static analysis');
+check('the new name inherits the identity record', Boolean(room.state.agents['renamed-agent']?.joinedAt));
 check('claimed work follows the rename', room.task(survivor).owner === 'renamed-agent');
 check('authored findings follow the rename', room.state.findings.every((f) => f.by !== 'alpha'));
 check('message history follows the rename', room.state.messages.every((m) => m.from !== 'alpha' && m.to !== 'alpha'));
@@ -436,6 +451,17 @@ console.log('\n  persistence layer');
   r.note('tester', 'write a private state file');
   await new Promise((resolve) => setTimeout(resolve, 350));
   check('file-backed state is owner-only', (fsFile.statSync(file).mode & 0o777) === 0o600);
+
+  const staleFile = pathFile.join(dir, 'stale-presence.json');
+  fsFile.writeFileSync(staleFile, JSON.stringify({
+    room: 'restored',
+    agents: { alpha: { name: 'alpha', lastSeen: Date.now(), hosts: ['old-relay', 'old-client'] } },
+  }));
+  const restored = new Room({ name: 'restored', file: staleFile });
+  check('file restore clears stale endpoint hosts without renaming the agent',
+    restored.state.agents.alpha.name === 'alpha' &&
+    restored.state.agents.alpha.lastSeen === 0 &&
+    restored.state.agents.alpha.hosts.length === 0);
   fsFile.rmSync(dir, { recursive: true });
 }
 // A fake persistence layer stands in for Postgres: the contract is load/save,
@@ -444,11 +470,13 @@ console.log('\n  persistence layer');
   const saved = [];
   let failNext = false;
   const fake = {
-    load: async () => ({ room: 'p', messages: [{ id: 'M1', seq: 1, from: 'a', to: 'all', text: 'from the db', ts: new Date().toISOString(), readBy: {} }], counters: { message: 1, seq: 1 } }),
+    load: async () => ({ room: 'p', agents: { a: { name: 'a', lastSeen: Date.now(), hosts: ['old-db-host'] } }, messages: [{ id: 'M1', seq: 1, from: 'a', to: 'all', text: 'from the db', ts: new Date().toISOString(), readBy: {} }], counters: { message: 1, seq: 1 } }),
     save: async (name, state) => { if (failNext) throw new Error('connection reset'); saved.push(state.messages.length); },
   };
   const r = await new Room({ name: 'p', file: null, persistence: fake }).init();
   check('state loads from the persistence layer', r.state.messages[0]?.text === 'from the db');
+  check('database restore also clears stale endpoint presence',
+    r.state.agents.a.lastSeen === 0 && r.state.agents.a.hosts.length === 0);
   check('an in-memory room with no file does not error on init',
     (await new Room({ name: 'mem', file: null }).init()).state.messages.length === 0);
 
@@ -518,7 +546,7 @@ console.log('\n  shared-brain graph');
     g.nodes.some((n) => n.type === 'agent') && g.nodes.some((n) => n.type === 'task')
     && g.nodes.some((n) => n.type === 'finding') && g.nodes.some((n) => n.type === 'file'));
   check('tasks link to the goal they serve', g.edges.some((e) => e.kind === 'serves'));
-  check('agents link to work they own', g.edges.some((e) => e.kind === 'owns'));
+  check('agents link to their current or completed work', g.edges.some((e) => ['working_on', 'built'].includes(e.kind)));
   check('reviewers link to the files they read', g.edges.some((e) => e.kind === 'reviewed'));
   check('every edge points at a node that exists', (() => {
     const ids = new Set(g.nodes.map((n) => n.id));
@@ -545,7 +573,9 @@ console.log('\n  shared-brain graph');
 
   const rel = await call('alpha', 'related', { id: 'votor/src/prose_target.rs' });
   check('the related tool walks the graph', rel.text.includes('Directly connected'), rel.text.slice(0, 120));
-  check('it reports how things connect', /\[(reviewed|found_in|owns|serves|reported)\]/.test(rel.text));
+  check('it reports how things connect', /\[(reviewed|found_in|working_on|built|serves|reported)\]/.test(rel.text));
+  const graphView = await call('alpha', 'graph', { type: 'agent' });
+  check('the graph is directly readable through MCP', graphView.text.includes('# Shared brain graph') && graphView.text.includes('agent:'));
   check('an unknown id fails usefully', (await call('alpha', 'related', { id: 'nope-nope' })).isError);
   check('related accepts a finding id too', !(await call('alpha', 'related', { id: 'F1' })).isError);
 }
@@ -565,6 +595,9 @@ check('every element the dashboard script writes to exists in its markup', (() =
 check('dashboard tab links carry the token and point at real routes',
   /class="tab[^"]*" href="\/\?token=/.test(pageText) && /class="tab[^"]*" href="\/help\?token=/.test(pageText));
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
+check('dashboard separates active and archived work', pageText.includes('Active queue') && pageText.includes('Standing &amp; actionable'));
+check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));
+check('coverage is a searchable full-width ledger', pageText.includes('coverage-filter') && pageText.includes('data-coverage-row'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 // Regression for the dashboard rewrite: esc() must actually escape (agent text is
 // injected into innerHTML) and the state fetch must build a real ?token= query.

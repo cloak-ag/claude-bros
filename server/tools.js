@@ -4,7 +4,7 @@
  * written to push toward "check before you work, announce after you find".
  */
 
-import { relatedTo } from './graph.js';
+import { buildGraph, relatedTo } from './graph.js';
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 
@@ -23,10 +23,7 @@ export const TOOL_DEFS = [
       'Register the exact identity already attached to this MCP connection AND read the operating briefing. The tool takes no name argument: never copy a name from documentation, another agent, or a prompt, and never rename yourself during a relay migration. Returns the shared environment, active goals, working protocol, ground rules, and what this board needs next. Call it first thing in every session. It is safe to repeat; it preserves your identity and work.',
     inputSchema: {
       type: 'object',
-      properties: {
-        role: str('Short role, e.g. "static analysis" or "recon + fuzzing".'),
-        scope: str('Concretely what you own, e.g. "auth middleware, session handling, /api/v1/user/*".'),
-      },
+      properties: {},
     },
   },
   {
@@ -191,6 +188,53 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: 'poll_create',
+    title: 'Open a team decision',
+    description:
+      'Create a durable team poll. Use a plain decision for coordination, or attach an action to release/reassign a task, remove an inactive agent, or restore one. Actions execute automatically only after the required votes pass; historical work attribution is preserved.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: str('The yes/no question the team is deciding.'),
+        reason: str('Concrete context teammates need before voting.'),
+        action: str('Optional action: task_reassign | task_release | agent_kick | agent_restore.', {
+          enum: ['task_reassign', 'task_release', 'agent_kick', 'agent_restore'],
+        }),
+        task_id: str('Task id for task_reassign/task_release.'),
+        assign_to: str('Agent receiving work for task_reassign.'),
+        agent: str('Agent identity for agent_kick/agent_restore. Only inactive agents can be kicked.'),
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'poll_vote',
+    title: 'Vote on a team decision',
+    description:
+      'Cast your one durable vote on an open poll. Read the question, reason, and attached action with polls first. A passed action is applied atomically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Poll id, e.g. "P3".'),
+        choice: str('yes | no | abstain', { enum: ['yes', 'no', 'abstain'] }),
+      },
+      required: ['id', 'choice'],
+    },
+  },
+  {
+    name: 'polls',
+    title: 'Read team decisions',
+    description:
+      'List open or decided team polls with vote thresholds, tallies, actions, and execution results. Call this with board and inbox whenever you rejoin or become available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: str('Optional: open | passed | rejected.', { enum: ['open', 'passed', 'rejected'] }),
+        id: str('Optional poll id to read in full.'),
+      },
+    },
+  },
+  {
     name: 'finding_add',
     title: 'Report a finding',
     description:
@@ -248,6 +292,22 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: 'graph',
+    title: 'Read the shared brain as a graph',
+    description:
+      'Read the same connected graph shown in the web Graph tab, directly through MCP. It includes agents, their current and completed tasks, goals, findings, files, and the relationships between them. Use it when joining or choosing work so you inherit the structure the team already built. The interactive view is at /graph on this relay; append the same token already configured for this MCP connection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: str('Optional node type: agent | goal | task | finding | file.', {
+          enum: ['agent', 'goal', 'task', 'finding', 'file'],
+        }),
+        status: str('Optional status filter: open | good | warn | bad | idle.'),
+        limit: { type: 'number', description: 'Maximum nodes to return, 1-100. Default 50.' },
+      },
+    },
+  },
+  {
     name: 'digest',
     title: 'Catch up without scrolling',
     description:
@@ -292,9 +352,12 @@ function renderBoard(board) {
   if (!board.agents.length) lines.push('  (nobody has joined yet)');
   for (const a of board.agents) {
     const mark = a.online ? '●' : '○';
-    lines.push(`  ${mark} ${a.name}${a.name === board.you ? ' (you)' : ''} — ${a.role || 'no role set'}`);
-    if (a.scope) lines.push(`      scope: ${a.scope}`);
-    lines.push(`      doing: ${a.status}  [seen ${a.lastSeenAgo}]`);
+    const current = a.currentTasks || [];
+    const taken = a.tasksTaken || [];
+    const built = a.completedTasks || [];
+    lines.push(`  ${mark} ${a.name}${a.name === board.you ? ' (you)' : ''} — ${current.length ? current.map((task) => `${task.id} ${task.title}`).join('; ') : 'available (no current task)'}`);
+    lines.push(`      activity: ${a.status || 'idle'}  [seen ${a.lastSeenAgo}]`);
+    if (taken.length) lines.push(`      took: ${taken.join(', ')}${built.length ? `; built/completed: ${built.map((task) => task.id).join(', ')}` : ''}`);
   }
 
   const section = (label, list, render) => {
@@ -322,6 +385,10 @@ function renderBoard(board) {
   ]);
   section('In progress', board.tasks.claimed, (t) => [`${t.id} ${t.title} — ${t.owner}`]);
   if (board.tasks.blocked.length) section('Blocked', board.tasks.blocked, (t) => [`${t.id} ${t.title} — ${t.owner || 'unowned'}`]);
+  if (board.polls?.open?.length) section('Open polls', board.polls.open, (p) => [
+    `${p.id} ${p.question} — ${p.tally.yes} yes / ${p.tally.no} no / ${p.tally.abstain} abstain (${p.tally.cast}/${p.tally.eligible} cast)`,
+    ...(p.action ? [`    action: ${JSON.stringify(p.action)}`] : []),
+  ]);
   section('Findings', board.findings, (f) => [
     `${f.id} [${f.severity}/${f.status}] ${f.title}  (by ${f.by})`,
     ...(f.target ? [`    target: ${f.target}`] : []),
@@ -358,6 +425,20 @@ function renderInbox(messages, waited) {
     .join('\n\n');
 }
 
+function renderPoll(poll) {
+  const tally = poll.tally || { yes: 0, no: 0, abstain: 0, cast: 0, eligible: 0 };
+  const lines = [
+    `${poll.id} [${poll.status}] ${poll.question}`,
+    `  votes: ${tally.yes} yes / ${tally.no} no / ${tally.abstain} abstain; ${tally.cast}/${tally.eligible} cast; ${poll.requiredYes} yes required`,
+  ];
+  if (poll.reason) lines.push(`  reason: ${poll.reason}`);
+  if (poll.action) lines.push(`  action: ${JSON.stringify(poll.action)}`);
+  if (poll.execution) lines.push(`  execution: ${JSON.stringify(poll.execution)}`);
+  const missing = (poll.eligible || []).filter((name) => !poll.votes?.[name]);
+  if (poll.status === 'open' && missing.length) lines.push(`  waiting on: ${missing.join(', ')}`);
+  return lines.join('\n');
+}
+
 /**
  * What an agent reads the instant it joins. This is the only briefing it is
  * guaranteed to see, so it carries the whole working protocol — and it adapts
@@ -372,6 +453,7 @@ function briefing(room, agent) {
   const env = Object.entries(room.state.env || {});
   const openTasks = board.tasks.open;
   const disputed = board.coverage.filter((f) => f.disagreement);
+  const openPolls = board.polls?.open || [];
 
   const L = [];
   L.push(`IDENTITY: You are exactly "${agent}" on the shared board "${board.room}".`);
@@ -380,7 +462,7 @@ function briefing(room, agent) {
   L.push('messages, the roster, or prompts. The `join` tool has no name argument and cannot rename you.');
   L.push(
     peers.length
-      ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'})${p.role ? ` — ${p.role}` : ''}`).join('; ')}`
+      ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'})`).join('; ')}`
       : 'You are the first one here. Others will join this same board.',
   );
   L.push('');
@@ -412,6 +494,7 @@ function briefing(room, agent) {
   L.push(`${step++}. Call \`files\` before opening any file. If your partner already reviewed it, read their`);
   L.push('   note instead of redoing the work.');
   if (board.unreadForYou) L.push(`${step++}. You have ${board.unreadForYou} unread message(s) — call \`inbox\` first.`);
+  if (openPolls.length) L.push(`${step++}. ${openPolls.length} team poll(s) need a decision — call \`polls\`, then \`poll_vote\` after reading the reason and action.`);
   if (disputed.length) L.push(`${step++}. ${disputed.length} file(s) have conflicting verdicts. Resolving those beats starting anything new.`);
   L.push('');
 
@@ -419,6 +502,8 @@ function briefing(room, agent) {
   L.push('## THE WORKING PROTOCOL');
   L.push('GOALS  → what the engagement is for. goal_add / goals. Agree them with your partner.');
   L.push('TASKS  → units of work under a goal. task_add(goal:"G1") → task_claim → task_update.');
+  L.push('         Agents have no static roles. Your current claimed task is your responsibility; your');
+  L.push('         completed task history is the durable record of what you built or investigated.');
   L.push('         NEVER start work you have not claimed. If task_claim says your partner owns it,');
   L.push('         pick something else — that is the collision guard doing its job.');
   L.push('FILES  → the coverage map. file_review every file when you finish reading it, INCLUDING');
@@ -429,6 +514,9 @@ function briefing(room, agent) {
   L.push('         Nothing gets submitted on one agent\'s say-so.');
   L.push('TALK   → status when you switch tasks. send for anything that changes what your partner');
   L.push('         should do next. inbox(wait_seconds) when you are genuinely blocked on them.');
+  L.push('POLLS  → poll_create for shared decisions and stale-work reassignment; polls → poll_vote.');
+  L.push('         Do not silently steal work or erase an agent. A passed poll moves the claim while');
+  L.push('         preserving the previous agent\'s task history and completed contributions.');
   L.push('');
 
   L.push('## KEEP LISTENING WHILE YOU WORK — THIS IS NOT OPTIONAL');
@@ -479,6 +567,10 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   if (!agent && name !== 'board') {
     return fail('This connection has no agent identity. Stop: do not guess or copy a name. Reconnect using the exact name assigned to this installation in ?agent=<agent-name>.');
   }
+  const membership = agent ? room.isAgentBlocked(agent) : { blocked: false };
+  if (membership.blocked && !['board', 'join'].includes(name)) {
+    return fail(`This identity was removed by collaboration poll ${membership.pollId || ''}: ${membership.reason}. It cannot act or vote until an agent_restore poll passes.`);
+  }
   if (agent) room.touch(agent);
 
   /**
@@ -490,6 +582,21 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   const staleStatus = agent && name !== 'status' && name !== 'join' && room.statusStale(agent);
   const withNag = (result) => {
     if (!result.content?.[0]) return result;
+    const currentWork = agent
+      ? room.state.tasks.filter((task) => task.owner === agent && ['claimed', 'blocked'].includes(task.status))
+      : [];
+    const openWork = room.state.tasks.filter((task) => task.status === 'open');
+    const openDecisions = room.listPolls('open').filter((poll) => poll.eligible.includes(agent) && !poll.votes?.[agent]);
+    if (!currentWork.length && openWork.length && !['task_claim', 'join'].includes(name)) {
+      result.content[0].text =
+        `[available] You have no current task and ${openWork.length} task(s) are open. Read board/inbox, then claim one now; ` +
+        'do not remain idle while teammates are offline.\n\n' + result.content[0].text;
+    }
+    if (openDecisions.length && !['polls', 'poll_vote', 'join'].includes(name)) {
+      result.content[0].text =
+        `[decision] Your vote is still needed on ${openDecisions.map((poll) => poll.id).join(', ')}. Call polls, read the reason/action, and vote.\n\n` +
+        result.content[0].text;
+    }
     if (staleStatus && !unbriefed) {
       // Seconds-granular liveness so the agent can see exactly how long it has
       // looked dead to the team, not just "a while".
@@ -524,7 +631,7 @@ export async function callTool(room, agent, name, args = {}, host = null) {
     }
 
     case 'join': {
-      const joined = room.join(agent, { role: args.role, scope: args.scope, host });
+      const joined = room.join(agent, { host });
       if (!joined.ok) return fail(joined.error);
       if (room.state.agents[agent]) room.state.agents[agent].boardAt = Date.now();
       return text(`${briefing(room, agent)}${renderBoard(room.board(agent))}`);
@@ -683,13 +790,60 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       }
       const result = room.claimTask(agent, args.id);
       if (!result.ok) return fail(result.error);
+      room.send(agent, { to: 'all', text: `${agent} claimed ${result.task.id}: ${result.task.title}. Send context or overlap warnings now, using reply_to when applicable.` });
       return text(`You own ${result.task.id}: ${result.task.title}\n${result.task.notes || ''}`);
     }
 
     case 'task_update': {
       const result = room.updateTask(agent, args.id, { status: args.status, notes: args.notes });
       if (!result.ok) return fail(result.error);
+      if (args.status === 'done' || args.status === 'blocked') {
+        room.send(agent, {
+          to: 'all',
+          text: `${agent} marked ${result.task.id} ${result.task.status}: ${result.task.title}.${args.notes ? ` Outcome: ${args.notes}` : ' Ask for the outcome before duplicating this work.'}`,
+        });
+      }
       return text(`${result.task.id} is now ${result.task.status}.`);
+    }
+
+    case 'poll_create': {
+      const actions = new Set(['task_reassign', 'task_release', 'agent_kick', 'agent_restore']);
+      if (args.action && !actions.has(args.action)) {
+        return fail(`Unknown poll action "${args.action}". Use task_reassign, task_release, agent_kick, or agent_restore.`);
+      }
+      let action = null;
+      if (args.action === 'task_reassign') action = { type: args.action, taskId: args.task_id, to: args.assign_to };
+      else if (args.action === 'task_release') action = { type: args.action, taskId: args.task_id };
+      else if (args.action === 'agent_kick' || args.action === 'agent_restore') action = { type: args.action, agent: args.agent };
+      const result = room.createPoll(agent, { question: args.question, reason: args.reason, action });
+      if (!result.ok) return fail(result.error);
+      room.send(agent, {
+        to: 'all',
+        urgent: Boolean(action),
+        text: `Vote needed on ${result.poll.id}: ${result.poll.question}${result.poll.reason ? ` — ${result.poll.reason}` : ''}${action ? ` Action: ${JSON.stringify(action)}.` : ''} Call polls, then poll_vote.`,
+      });
+      return text(renderPoll(result.poll));
+    }
+
+    case 'poll_vote': {
+      const result = room.votePoll(agent, args.id, args.choice);
+      if (!result.ok) return fail(result.error);
+      if (result.finalized) {
+        room.send(agent, {
+          to: 'all',
+          text: `${result.poll.id} ${result.poll.status}. ${result.poll.execution ? `Action result: ${JSON.stringify(result.poll.execution)}` : 'Decision recorded.'}`,
+        });
+      }
+      return text(renderPoll(result.poll));
+    }
+
+    case 'polls': {
+      if (args.id) {
+        const poll = room.poll(args.id);
+        return poll ? text(renderPoll(poll)) : fail(`No poll ${args.id}.`);
+      }
+      const list = room.listPolls(args.status || '');
+      return text(list.length ? list.map(renderPoll).join('\n\n') : `No ${args.status || ''} polls found.`.replace('  ', ' '));
     }
 
     case 'finding_add': {
@@ -751,6 +905,48 @@ export async function callTool(room, agent, name, args = {}, host = null) {
         }
         lines.push('');
       }
+      return text(lines.join('\n'));
+    }
+
+    case 'graph': {
+      const graph = buildGraph(room.state);
+      const allowedStatus = new Set(['open', 'good', 'warn', 'bad', 'idle']);
+      if (args.status && !allowedStatus.has(args.status)) {
+        return fail('graph status must be one of: open, good, warn, bad, idle.');
+      }
+      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 100);
+      let nodes = graph.nodes;
+      if (args.type) nodes = nodes.filter((node) => node.type === args.type);
+      if (args.status) nodes = nodes.filter((node) => node.status === args.status);
+      nodes = nodes
+        .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))
+        .slice(0, limit);
+      const visible = new Set(nodes.map((node) => node.id));
+      const edges = graph.edges.filter((edge) => visible.has(edge.from) || visible.has(edge.to));
+      const counts = graph.nodes.reduce((acc, node) => {
+        acc[node.type] = (acc[node.type] || 0) + 1;
+        return acc;
+      }, {});
+      const lines = [
+        '# Shared brain graph',
+        `All nodes: ${Object.entries(counts).map(([kind, count]) => `${kind} ${count}`).join(' · ')} · edges ${graph.edges.length}`,
+        'Interactive view: open `/graph?token=<your already-configured token>` on the same relay origin.',
+        '',
+        `## Nodes (${nodes.length}${nodes.length < graph.nodes.length ? ` of ${graph.nodes.length}` : ''})`,
+      ];
+      for (const node of nodes) {
+        lines.push(`  ${node.id} [${node.status}] degree=${node.degree} — ${node.detail || node.label}`);
+        if (node.type === 'agent') {
+          const current = node.meta.currentTasks || [];
+          const built = node.meta.completed || [];
+          lines.push(`      current: ${current.join(', ') || 'none (available)'}; built/completed: ${built.map((task) => task.id).join(', ') || 'none recorded'}`);
+        }
+      }
+      lines.push('', `## Relationships touching these nodes (${edges.length})`);
+      for (const edge of edges.slice(0, 150)) {
+        lines.push(`  ${edge.from} --${edge.kind}${edge.inferred ? ' (inferred)' : ''}--> ${edge.to}`);
+      }
+      if (edges.length > 150) lines.push(`  ... ${edges.length - 150} more; filter by type or call related on a node id.`);
       return text(lines.join('\n'));
     }
 

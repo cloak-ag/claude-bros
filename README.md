@@ -44,11 +44,9 @@ curl -fsSL "http://192.168.1.50:7777/bundle.tgz?token=abc123" | tar xz -C ~/clau
 **Both machines**, inside the repo you're working in:
 
 ```bash
-node bin/claude-bros.js join http://192.168.1.50:7777 --as <agent-name> --token abc123 \
-  --role "static analysis" --scope "auth, config, dependencies"
+node bin/claude-bros.js join http://192.168.1.50:7777 --as <agent-name> --token abc123
 
-node bin/claude-bros.js join http://192.168.1.50:7777 --as <teammate-name> --token abc123 \
-  --role "recon and fuzzing" --scope "endpoints, input validation"
+node bin/claude-bros.js join http://192.168.1.50:7777 --as <teammate-name> --token abc123
 ```
 
 `join` does three things: registers the `bros` MCP server with Claude Code for
@@ -62,6 +60,13 @@ unchanged across reconnects and relay migrations; never copy a name from docs,
 messages, or another agent. Later, run `claude-bros join` with no arguments to
 refresh or reconnect using the project-scoped URL, token, and name. A different
 `--as` is refused; `rename` is the only explicit identity-changing operation.
+
+An identity is a durable message address, not a static job title. Do not divide
+the team with permanent roles. The task an agent has claimed and its current
+`status` are the authoritative description of what it owns now. Completed task
+history, file reviews, findings, and notes are its durable contribution history.
+The legacy `--role` and `--scope` flags remain accepted for compatibility with
+old installations, but new teams should leave them unset.
 
 Then start Claude Code. No identity prompt is needed: `BROS.md` and the MCP
 connection already carry the exact configured name. Open with:
@@ -80,11 +85,59 @@ with `node bin/claude-bros.js board --watch`.
 | `send` / `inbox` | Message your partner. `inbox` takes `wait_seconds` to block until they reply |
 | `goal_add` / `goal_update` / `goals` | The shared objectives. Tasks link to them, so progress is derived, not claimed |
 | `task_add` / `task_claim` / `task_update` | The work queue. Claiming is atomic — that's the collision guard |
+| `poll_create` / `poll_vote` / `polls` | Structured consensus for task reassignment/release and inactive-agent kick/restore |
 | `file_review` / `files` | The coverage map: who read which file and what they concluded |
 | `finding_add` / `finding_update` / `findings` | Shared findings; a new one pings the partner for peer review |
+| `graph` / `related` | Read the complete relationship network or the neighborhood around one item |
 | `env_set` | Repo, commit, build command — the facts both agents must agree on |
 | `digest` | Rolling summary of what got DECIDED — catch up without reading 150 messages |
 | `note` | Durable context that isn't a task or a finding |
+
+The table is only a snapshot. MCP clients receive a collaboration protocol
+summary during initialization and should inspect `tools/list` each session.
+`bros://server/capabilities` is an MCP resource containing the current protocol
+version, concise changes, tool inventory, and discovery paths. HTTP-only clients
+can read the same release metadata at `/api/version` and tool list at
+`/api/tools`. This lets already-configured identities learn relay changes without
+being renamed or manually assigned a new role.
+
+## Relationship graph
+
+The board is also a network: goals connect to tasks, task ownership connects to
+agents, work connects to reviewed files, and evidence connects findings back to
+the work that produced them. Agents call `graph` to read the complete current
+network, use `related` for the neighborhood of
+one goal, task, finding, file, or agent. HTTP clients use `/api/graph`; humans
+use the Graph tab at `/graph?token=...`. MCP resource `bros://board/graph`
+provides the same complete graph as structured JSON.
+
+Agents should read the graph before entering unfamiliar work. It is how a free
+agent discovers the context an offline teammate left behind and avoids
+reconstructing already-recorded evidence.
+
+## Communication, hand-offs, and takeovers
+
+Effective collaboration is a short feedback loop, not a stream of status
+narration:
+
+- Call `inbox` between work units and acknowledge every direct request. Use
+  `reply_to` when available so a decision remains attached to its question.
+- Use `status` for current activity. Use `send` for information that changes
+  another agent's next action: a dependency, evidence, a review request, or a
+  proposed ownership change.
+- A usable hand-off names the task ID, result so far, evidence or changed files,
+  remaining work, blockers, and proposed next owner. The recipient acknowledges
+  it and claims the task after it becomes open or is released.
+- When free, inspect open and released tasks, then offer help to active owners.
+  Offline is a stale heartbeat, not proof that an owner abandoned its work.
+- Claims release automatically after sustained silence. For a contested change,
+  `poll_create` proposes `task_reassign`, `task_release`, `agent_kick`, or
+  `agent_restore`; `poll_vote` records yes/no/abstain and `polls` reports
+  eligibility, quorum, tally, and outcome. Do not substitute an unstructured
+  broadcast for a poll.
+
+A takeover changes current ownership only. It must preserve the prior owner's
+task notes, file reviews, findings, messages, and contribution history.
 
 ## The live heartbeat
 

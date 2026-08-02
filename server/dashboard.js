@@ -10,24 +10,27 @@ export const dashboardHtml = (roomName, query = '') => `<!doctype html>
 <style>
 ${THEME_CSS}
 ${NAV_CSS}
-  body { padding:0 24px 60px; }
+  body { padding:0 24px 72px; }
+  .wrap { max-width:1800px; margin:0 auto; display:grid; gap:24px; }
 
   /* stat row */
-  .stats { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); margin-bottom:22px; }
+  .stats { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
   .stat { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
   .stat .n { font-size:26px; font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.15; }
   .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; margin-top:2px; }
   .stat .sub { font-size:12px; color:var(--ink-2); margin-top:6px; }
 
   section { background:var(--surface); border:1px solid var(--line); border-radius:12px;
-            padding:16px 18px; min-width:0; margin-bottom:18px; }
+            padding:20px; min-width:0; margin:0; }
   /* Three equal columns that hold their size — content scrolls inside the box
      instead of stretching it, so the row never reflows as work comes in. */
-  .grid { display:grid; gap:18px; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch; }
+  .grid { display:grid; gap:20px; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch; }
   .grid section { margin-bottom:0; height:var(--pane-h,420px); display:flex; flex-direction:column; }
   .grid section > h2 { flex:none; }
   @media (max-width:1080px) { .grid { grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); } }
   @media (max-width:560px)  { .grid { grid-template-columns:1fr; } }
+  .grid.insights { grid-template-columns:minmax(0,1.15fr) minmax(0,.9fr) minmax(0,.85fr); }
+  @media (max-width:800px) { .grid.insights { grid-template-columns:1fr; } }
 
   .pane { overflow-y:auto; overscroll-behavior:contain; flex:1 1 auto; min-height:0; padding-right:4px; }
   .pane::-webkit-scrollbar { width:9px; }
@@ -37,9 +40,6 @@ ${NAV_CSS}
   .pane::-webkit-scrollbar-thumb:hover { background:var(--muted); }
   .pane { scrollbar-width:thin; scrollbar-color:var(--rule) transparent; }
   #messages { max-height:360px; }
-  #files { max-height:460px; overflow-y:auto; }
-  #files table { min-width:720px; }
-  #files thead th { position:sticky; top:0; background:var(--surface); z-index:1; }
   .row { padding:9px 0; border-bottom:1px solid var(--line); word-break:break-word; }
   .row:last-child { border-bottom:0; }
   .empty { color:var(--muted); font-style:italic; font-size:13px; }
@@ -86,6 +86,64 @@ ${NAV_CSS}
   .digest ul { margin:4px 0 0; padding-left:18px; }
   .digest li { font-size:12.5px; color:var(--ink-2); margin-bottom:2px; }
 
+  /* Tasks and findings are work queues, so unresolved work is primary and
+     historical records sit in a deliberately quieter, collapsed archive. */
+  .queue-group + .queue-group, .queue-group + details, details + .queue-group { margin-top:18px; }
+  .group-title { display:flex; align-items:center; gap:8px; margin:0 0 6px; color:var(--ink-2);
+                 font-size:11px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; }
+  .count { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:20px;
+           padding:0 6px; border-radius:999px; color:var(--muted); background:var(--plane);
+           border:1px solid var(--line); font:11px/1 var(--mono); }
+  .work-item { padding:12px 0; border-bottom:1px solid var(--line); }
+  .work-item:last-child { border-bottom:0; }
+  .work-head { display:flex; align-items:flex-start; gap:9px; }
+  .work-id { flex:none; padding-top:2px; }
+  .work-title { min-width:0; font-weight:600; line-height:1.4; overflow-wrap:anywhere; }
+  .work-meta { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin-top:7px; }
+  details.archive { border-top:1px solid var(--rule); padding-top:12px; }
+  details.archive > summary { display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--muted);
+                              font-size:11px; font-weight:700; letter-spacing:.07em;
+                              list-style:none; text-transform:uppercase; user-select:none; }
+  details.archive > summary::-webkit-details-marker { display:none; }
+  details.archive > summary::before { content:'›'; font-size:17px; line-height:1; transform:rotate(0); transition:transform .12s ease; }
+  details.archive[open] > summary::before { transform:rotate(90deg); }
+  details.archive .work-item { opacity:.74; }
+  .finding-item { padding:13px 0; }
+  .finding-item .path { margin-top:7px; color:var(--ink-2); overflow-wrap:anywhere; }
+
+  /* Coverage is a full-width ledger. Each review remains a single row so the
+     reviewer, verdict and note cannot become visually detached. */
+  .coverage-head { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin-bottom:16px; }
+  .coverage-head h2 { margin-bottom:4px; }
+  .coverage-head p { margin:0; }
+  .coverage-filter { flex:0 1 360px; }
+  .coverage-filter span { display:block; margin-bottom:5px; color:var(--muted); font-size:11px;
+                          font-weight:700; letter-spacing:.07em; text-transform:uppercase; }
+  .coverage-filter input { width:100%; min-height:38px; border:1px solid var(--rule); border-radius:8px;
+                           padding:7px 10px; background:var(--plane); color:var(--ink); font:13px var(--sans); }
+  .coverage-filter input:focus { outline:2px solid color-mix(in srgb,var(--series-1) 45%,transparent); outline-offset:1px; }
+  .coverage-list { display:grid; gap:12px; max-height:760px; overflow:auto; padding-right:5px;
+                   overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--rule) transparent; }
+  .file-card { border:1px solid var(--line); border-radius:10px; background:var(--plane); overflow:hidden; }
+  .file-head { display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; padding:11px 13px;
+               border-bottom:1px solid var(--line); background:var(--surface); }
+  .file-path { flex:1 1 480px; min-width:0; font-family:var(--mono); font-size:13px; font-weight:650;
+               overflow-wrap:anywhere; word-break:normal; }
+  .file-links { display:flex; flex-wrap:wrap; gap:5px; }
+  .review-row { display:grid; grid-template-columns:minmax(150px,200px) minmax(110px,145px) minmax(260px,1fr);
+                gap:14px; align-items:start; padding:11px 13px; }
+  .review-row + .review-row { border-top:1px solid var(--line); }
+  .review-note { min-width:0; color:var(--ink-2); overflow-wrap:anywhere; }
+  .review-note.empty-note { color:var(--muted); font-style:italic; }
+  .review-lines { display:block; margin-top:3px; color:var(--muted); font:11px var(--mono); }
+  .coverage-none { display:none; }
+  @media (max-width:720px) {
+    .coverage-head { align-items:stretch; flex-direction:column; }
+    .coverage-filter { flex-basis:auto; width:100%; }
+    .review-row { grid-template-columns:1fr; gap:7px; }
+    .coverage-list { max-height:none; }
+  }
+
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.07em;
        color:var(--muted); padding:9px 10px 9px 0; border-bottom:2px solid var(--rule); }
@@ -114,7 +172,7 @@ ${NAV_CSS}
 <div class="wrap">
   <div class="stats" id="stats"></div>
 
-  <section style="margin-top:18px"><h2>Shared environment</h2><div class="envgrid" id="env"></div></section>
+  <section><h2>Shared environment</h2><div class="envgrid" id="env"></div></section>
 
   <div class="grid">
     <section><h2>Goals</h2><div class="pane" id="goals"></div></section>
@@ -122,13 +180,22 @@ ${NAV_CSS}
     <section><h2>Tasks</h2><div class="pane" id="tasks"></div></section>
   </div>
 
-  <div class="grid">
-    <section><h2>File coverage — the shared brain</h2><div class="pane scroll" id="files"></div></section>
+  <div class="grid insights">
     <section><h2>Findings</h2><div class="pane" id="findings"></div></section>
+    <section><h2>Polls — team decisions</h2><div class="pane" id="polls"></div></section>
     <section><h2>Digest — what got decided</h2><div class="pane" id="digest"></div></section>
   </div>
 
-  <section style="margin-top:18px"><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
+  <section class="coverage-section">
+    <div class="coverage-head">
+      <div><h2>File coverage — the shared brain</h2><p class="muted">Every review, verdict, and note stays paired with its file.</p></div>
+      <label class="coverage-filter"><span>Filter coverage</span><input id="coverage-filter" type="search" placeholder="Path, reviewer, verdict, note…" autocomplete="off"></label>
+    </div>
+    <div class="coverage-list" id="files"></div>
+    <div class="empty coverage-none" id="coverage-none">No reviews match this filter.</div>
+  </section>
+
+  <section><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
 </div>
 
 <script>
@@ -200,6 +267,8 @@ const hb = (a) => {
 const ICON = { clean:'✓', partial:'◐', suspicious:'▲', vulnerable:'✕', skipped:'–', reviewed:'·' };
 const pill = (kind, label) => '<span class="pill ' + esc(kind) + '">' + (ICON[kind] || '') + ' ' + esc(label || kind) + '</span>';
 
+const empty = (message) => '<div class="empty">' + esc(message) + '</div>';
+
 // Identity colour is assigned by stable name order, never by rank or activity.
 let palette = {};
 const colourFor = (name) => palette[name] || 'var(--muted)';
@@ -210,6 +279,22 @@ const who = (name, st) => {
   return '<span class="' + cls.join(' ') + '">'
     + '<span class="dot" style="background:' + colourFor(name) + '"></span>' + esc(name) + '</span>';
 };
+
+const applyCoverageFilter = () => {
+  const input = el('coverage-filter');
+  const needle = String(input && input.value || '').trim().toLowerCase();
+  const rows = [...document.querySelectorAll('[data-coverage-row]')];
+  let visible = 0;
+  rows.forEach((row) => {
+    const match = !needle || String(row.dataset.search || '').includes(needle);
+    row.hidden = !match;
+    if (match) visible += 1;
+  });
+  el('coverage-none').style.display = needle && rows.length && !visible ? 'block' : 'none';
+};
+el('coverage-filter').addEventListener('input', applyCoverageFilter);
+let taskArchiveOpen = false;
+let rejectedArchiveOpen = false;
 
 async function tick() {
   let s;
@@ -245,6 +330,7 @@ async function tick() {
   const goals = s.goals || [];
   const files = Object.values(s.files || {});
   const findings = s.findings || [];
+  const polls = s.polls || [];
 
   // ---- goals, with progress derived from the tasks pointed at them
   const withProgress = goals.map((g) => {
@@ -276,8 +362,9 @@ async function tick() {
     '<div class="stat"><div class="n">' + reviewed.length + '</div><div class="l">files covered</div>'
       + '<div class="sub">' + peer.length + ' peer-reviewed'
       + (disputed.length ? ' · <b style="color:var(--critical)">' + disputed.length + ' disputed</b>' : '') + '</div></div>',
-    '<div class="stat"><div class="n">' + findings.length + '</div><div class="l">findings</div>'
-      + '<div class="sub">' + (worst ? pill(worst, 'worst: ' + worst) : 'none yet') + '</div></div>',
+    '<div class="stat"><div class="n">' + openFindings.length + '</div><div class="l">standing findings</div>'
+      + '<div class="sub">' + (worst ? pill(worst, 'worst: ' + worst) : 'none yet')
+      + (findings.length - openFindings.length ? ' · ' + (findings.length - openFindings.length) + ' rejected' : '') + '</div></div>',
     '<div class="stat"><div class="n">' + tasks.filter((t) => t.status !== 'done').length + '</div><div class="l">tasks left</div>'
       + '<div class="sub">' + tasks.filter((t) => t.status === 'claimed').length + ' in progress</div></div>',
   ].join('');
@@ -301,48 +388,118 @@ async function tick() {
   fill(el('agents'), agents, (a) => {
     const st = liveness(a);
     const t = ms(a.lastSeen);
+    const current = tasks.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status));
+    const taken = tasks.filter((task) => (task.participants || []).includes(a.name)
+      || task.owner === a.name || task.lastOwner === a.name
+      || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
+    const completed = taken.filter((task) => task.status === 'done');
     return who(a.name, st)
-      + '<div class="ink2" style="font-size:13px;margin-top:3px">' + esc(a.status || 'idle') + '</div>'
+      + '<div class="ink2" style="font-size:13px;margin-top:3px"><b>Current:</b> '
+      + (current.length ? current.map((task) => '<code>' + esc(task.id) + '</code> ' + esc(task.title)).join('; ') : 'available — no claimed task') + '</div>'
+      + '<div class="muted" style="margin-top:3px">Activity: ' + esc(a.status || 'idle') + '</div>'
+      + (taken.length ? '<div class="muted">Took ' + esc(taken.map((task) => task.id).join(', '))
+        + (completed.length ? ' · built/completed ' + esc(completed.map((task) => task.id).join(', ')) : '') + '</div>' : '')
       + '<div class="muted">' + pill(st, st === 'active' ? 'up' : st)
       + ' <span class="hb">last activity ' + hb(a) + '</span>'
       + (st === 'offline' && t ? ' · ' + onDay(t) + at(t) : '') + '</div>';
   });
 
-  const order = { claimed:0, blocked:1, open:2, done:3 };
-  fill(el('tasks'), [...tasks].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9)), (t) =>
-    '<code class="muted">' + esc(t.id) + '</code> '
-    + (t.status === 'done' ? '<s class="muted">' + esc(t.title) + '</s>' : esc(t.title))
-    + (t.goal ? ' <code class="muted">→' + esc(t.goal) + '</code>' : '')
-    + '<div style="margin-top:3px">' + pill(t.status === 'done' ? 'clean' : t.status === 'blocked' ? 'suspicious' : 'reviewed', t.status)
-    + (t.owner ? ' ' + who(t.owner)
-        : t.status === 'done' ? '' : ' <span class="muted">unclaimed</span>') + '</div>');
+  const taskOrder = { claimed:0, blocked:1, open:2 };
+  const activeTasks = tasks.filter((t) => t.status !== 'done').sort((a, b) =>
+    (taskOrder[a.status] ?? 9) - (taskOrder[b.status] ?? 9)
+      || String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric:true }));
+  const completedTasks = tasks.filter((t) => t.status === 'done').sort((a, b) =>
+    String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
+      || String(b.id || '').localeCompare(String(a.id || ''), undefined, { numeric:true }));
+  const taskRow = (t) => '<div class="work-item">'
+    + '<div class="work-head"><code class="muted work-id">' + esc(t.id) + '</code>'
+    + '<div class="work-title">' + esc(t.title) + '</div></div>'
+    + '<div class="work-meta">'
+    + pill(t.status === 'done' ? 'clean' : t.status === 'blocked' ? 'suspicious' : t.status === 'claimed' ? 'active' : 'reviewed', t.status)
+    + (t.owner ? who(t.owner) : t.status === 'done' ? '' : '<span class="muted">unclaimed</span>')
+    + (t.goal ? '<code class="muted">goal ' + esc(t.goal) + '</code>' : '')
+    + (t.dependsOn ? '<code class="muted">depends on ' + esc(t.dependsOn) + '</code>' : '')
+    + '</div></div>';
+  el('tasks').innerHTML = '<div class="queue-group"><div class="group-title">Active queue <span class="count">'
+    + activeTasks.length + '</span></div>'
+    + (activeTasks.length ? activeTasks.map(taskRow).join('') : empty('No active tasks.')) + '</div>'
+    + '<details class="archive"' + (taskArchiveOpen ? ' open' : '') + '><summary>Completed <span class="count">' + completedTasks.length + '</span></summary>'
+    + (completedTasks.length ? completedTasks.map(taskRow).join('') : empty('No completed tasks.')) + '</details>';
+  el('tasks').querySelector('details.archive').addEventListener('toggle', (event) => {
+    taskArchiveOpen = event.currentTarget.open;
+  });
 
   const SEV = { critical:0, high:1, medium:2, low:3, info:4 };
-  const bySeverity = [...findings].sort((a, b) =>
+  const bySeverity = (list) => [...list].sort((a, b) =>
     (SEV[a.severity] ?? 9) - (SEV[b.severity] ?? 9) || (b.ts || '').localeCompare(a.ts || ''));
-  fill(el('findings'), bySeverity, (f) =>
-    pill(f.severity, f.severity) + ' ' + pill(f.status === 'confirmed' ? 'clean' : f.status === 'rejected' ? 'skipped' : 'partial', f.status)
-    + '<div style="margin-top:4px"><b>' + esc(f.title) + '</b></div>'
-    + (f.target ? '<div class="path muted">' + esc(f.target) + '</div>' : '')
-    + '<div class="muted">by ' + esc(f.by) + '</div>');
+  const standingFindings = bySeverity(findings.filter((f) => f.status !== 'rejected'));
+  const rejectedFindings = bySeverity(findings.filter((f) => f.status === 'rejected'));
+  const findingRow = (f) => '<div class="work-item finding-item">'
+    + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
+    + '<div class="work-title">' + esc(f.title) + '</div></div>'
+    + '<div class="work-meta">' + pill(f.severity, f.severity)
+    + pill(f.status === 'confirmed' ? 'clean' : f.status === 'rejected' ? 'skipped' : 'partial', f.status)
+    + (f.by ? '<span class="muted">reported by ' + esc(f.by) + '</span>' : '') + '</div>'
+    + (f.target ? '<div class="path">' + esc(f.target) + '</div>' : '')
+    + '</div>';
+  el('findings').innerHTML = '<div class="queue-group"><div class="group-title">Standing &amp; actionable <span class="count">'
+    + standingFindings.length + '</span></div>'
+    + (standingFindings.length ? standingFindings.map(findingRow).join('') : empty('No standing findings.')) + '</div>'
+    + '<details class="archive"' + (rejectedArchiveOpen ? ' open' : '') + '><summary>Rejected <span class="count">' + rejectedFindings.length + '</span></summary>'
+    + (rejectedFindings.length ? rejectedFindings.map(findingRow).join('') : empty('No rejected findings.')) + '</details>';
+  el('findings').querySelector('details.archive').addEventListener('toggle', (event) => {
+    rejectedArchiveOpen = event.currentTarget.open;
+  });
+
+  const pollRow = (p) => {
+    const votes = Object.values(p.votes || {}).map((vote) => vote.choice);
+    const yes = votes.filter((choice) => choice === 'yes').length;
+    const no = votes.filter((choice) => choice === 'no').length;
+    const abstain = votes.filter((choice) => choice === 'abstain').length;
+    return '<div class="work-item"><div class="work-head"><code class="muted work-id">' + esc(p.id) + '</code>'
+      + '<div class="work-title">' + esc(p.question) + '</div></div><div class="work-meta">'
+      + pill(p.status === 'passed' ? 'clean' : p.status === 'rejected' ? 'skipped' : 'partial', p.status)
+      + '<span class="muted">' + yes + ' yes · ' + no + ' no · ' + abstain + ' abstain · '
+      + votes.length + '/' + (p.eligible || []).length + ' cast</span></div>'
+      + (p.reason ? '<div class="ink2" style="margin-top:7px">' + esc(p.reason) + '</div>' : '')
+      + (p.action ? '<div class="muted" style="margin-top:5px">Action: <code>' + esc(JSON.stringify(p.action)) + '</code></div>' : '')
+      + (p.execution ? '<div class="muted" style="margin-top:5px">Result: <code>' + esc(JSON.stringify(p.execution)) + '</code></div>' : '')
+      + '</div>';
+  };
+  const openPolls = polls.filter((p) => p.status === 'open');
+  const decidedPolls = polls.filter((p) => p.status !== 'open').slice().reverse();
+  el('polls').innerHTML = '<div class="queue-group"><div class="group-title">Needs votes <span class="count">'
+    + openPolls.length + '</span></div>' + (openPolls.length ? openPolls.map(pollRow).join('') : empty('No open polls.')) + '</div>'
+    + '<details class="archive"><summary>Decided <span class="count">' + decidedPolls.length + '</span></summary>'
+    + (decidedPolls.length ? decidedPolls.map(pollRow).join('') : empty('No decisions yet.')) + '</details>';
 
   // ---- the coverage table: who has actually read what, and did they agree
-  const sorted = [...reviewed].sort((a, b) => (b.lastTouched || '').localeCompare(a.lastTouched || ''));
+  const reviewTime = (f) => {
+    const reviews = f.reviews || [];
+    return f.lastTouched || (reviews.length && reviews[reviews.length - 1].ts) || '';
+  };
+  const sorted = [...reviewed].sort((a, b) => {
+    const aDisputed = new Set(a.reviews.map((r) => r.verdict)).size > 1;
+    const bDisputed = new Set(b.reviews.map((r) => r.verdict)).size > 1;
+    return Number(bDisputed) - Number(aDisputed) || reviewTime(b).localeCompare(reviewTime(a));
+  });
   el('files').innerHTML = sorted.length
-    ? '<table><thead><tr><th>File</th><th>Reviewed by</th><th>Verdict</th><th>Latest note</th></tr></thead><tbody>'
-      + sorted.map((f) => {
+    ? sorted.map((f) => {
           const dispute = new Set(f.reviews.map((r) => r.verdict)).size > 1;
-          const last = f.reviews[f.reviews.length - 1];
-          return '<tr>'
-            + '<td class="path">' + (dispute ? '<b style="color:var(--critical)">‖ </b>' : '') + esc(f.path)
-              + (f.findings && f.findings.length ? ' <code class="muted">' + esc(f.findings.join(',')) + '</code>' : '') + '</td>'
-            + '<td>' + f.reviews.map((r) => who(r.agent)).join(' ') + '</td>'
-            + '<td>' + f.reviews.map((r) => pill(r.verdict, r.verdict)).join(' ') + '</td>'
-            + '<td class="muted">' + esc((last && last.note) || '') + '</td>'
-            + '</tr>';
+          const search = [f.path, ...(f.findings || []), ...f.reviews.flatMap((r) => [r.agent, r.verdict, r.note, r.lines])].join(' ').toLowerCase();
+          return '<article class="file-card" data-coverage-row data-search="' + esc(search) + '">'
+            + '<div class="file-head"><div class="file-path">' + esc(f.path) + '</div>'
+            + '<div class="file-links">' + (dispute ? pill('vulnerable', 'disputed') : f.reviews.length > 1 ? pill('clean', 'peer reviewed') : pill('reviewed', 'single review'))
+            + (f.findings || []).map((id) => '<code class="pill reviewed">' + esc(id) + '</code>').join('') + '</div></div>'
+            + f.reviews.map((r) => '<div class="review-row">'
+                + '<div>' + who(r.agent) + (r.ts ? '<span class="review-lines">' + esc(onDay(r.ts) + at(r.ts)) + '</span>' : '') + '</div>'
+                + '<div>' + pill(r.verdict, r.verdict) + (r.lines ? '<span class="review-lines">lines ' + esc(r.lines) + '</span>' : '') + '</div>'
+                + '<div class="review-note' + (r.note ? '' : ' empty-note') + '">' + esc(r.note || 'No review note recorded.') + '</div>'
+              + '</div>').join('')
+            + '</article>';
         }).join('')
-      + '</tbody></table>'
     : '<div class="empty">No files recorded yet — agents log them with the <code>file_review</code> tool.</div>';
+  applyCoverageFilter();
 
   // ---- Digest pane (from main)
   const digests = [...(s.digests || [])].reverse();
