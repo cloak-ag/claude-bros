@@ -3,7 +3,8 @@ import path from 'node:path';
 
 const ONLINE_WINDOW_MS = 90_000;
 const STATUS_STALE_MS = 5 * 60_000;      // a status older than this is not "what they are doing"
-const CLAIM_STALE_MS = 30 * 60_000;      // an owner silent this long no longer holds their claim
+// an owner silent this long no longer holds their claim — tunable via BROS_CLAIM_STALE_MS (ms)
+const claimStaleMs = () => Number(process.env.BROS_CLAIM_STALE_MS) || 30 * 60_000;
 const DEDUP_WINDOW_MS = 5 * 60_000;      // identical text from one agent inside this window is a repeat
 const COLLISION_GRACE_MS = 30 * 60_000;  // a name is free again once its machine has been silent this long
 const DIGEST_EVERY_MESSAGES = 20;
@@ -19,9 +20,10 @@ const nowIso = () => new Date().toISOString();
  * respect to the others, which is what makes task claiming safe.
  */
 export class Room {
-  constructor({ name, file }) {
+  constructor({ name, file, persistence = null }) {
     this.name = name;
     this.file = file;
+    this.persistence = persistence;
     this.waiters = [];
     this.saveTimer = null;
     this.state = {
@@ -39,26 +41,58 @@ export class Room {
       aliases: {},
       counters: { message: 0, task: 0, finding: 0, goal: 0, seq: 0 },
     };
-    this.#load();
+    // Synchronous load for file-based or pure in-memory (used by tests);
+    // async init() for PostgreSQL
+    if (!persistence) {
+      this.#loadSync();
+    }
   }
 
-  #load() {
-    if (!this.file || !fs.existsSync(this.file)) return;
+  #loadSync() {
+    // Pure in-memory (file is null/undefined) - just initialize empty state
+    if (!this.file) return;
+    if (!fs.existsSync(this.file)) return;
     try {
       const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      // Counters must MERGE, not replace. A file written before a counter
-      // existed leaves it undefined, and `undefined + 1` is NaN — which then
-      // mints ids like "GNaN" that nothing can ever reference.
       this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
       this.#repairIds();
-      // Nobody is online across a restart until they check in again.
       for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
     } catch (err) {
       console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
     }
   }
 
+  async init() {
+    // If persistence layer provided (PostgreSQL), use it
+    if (this.persistence?.load) {
+      const state = await this.persistence.load(this.name);
+      if (state) {
+        this.state = { ...this.state, ...state, counters: { ...this.state.counters, ...(state.counters || {}) } };
+        this.#repairIds();
+        for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+        return this;
+      }
+    }
+    // Fallback to file-based (if file wasn't loaded in constructor)
+    if (this.file && !fs.existsSync(this.file)) return this;
+    try {
+      const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
+      this.#repairIds();
+      for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+    } catch (err) {
+      console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
+    }
+    return this;
+  }
+
   save() {
+    // If persistence layer provided (PostgreSQL), use it
+    if (this.persistence?.save) {
+      this.persistence.save(this.name, this.state);
+      return;
+    }
+    // Fallback to file-based
     if (!this.file || this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -241,6 +275,11 @@ export class Room {
     );
     if (repeat) return { ...repeat, duplicate: true };
 
+    // Detect @mentions in the text
+    const mentionMatch = text.match(/@([a-zA-Z0-9_-]+)/);
+    const mention = mentionMatch ? mentionMatch[1] : null;
+    const isMention = mention && mention in this.state.agents;
+
     this.state.counters.seq = (Number(this.state.counters.seq) || 0) + 1;
     const msg = {
       id: this.#id('message', 'M'),
@@ -248,8 +287,9 @@ export class Room {
       from,
       to,
       text,
-      urgent: Boolean(urgent),
+      urgent: Boolean(urgent) || isMention, // Mentions are treated as urgent
       replyTo: replyTo || null,
+      mention: isMention ? mention : null, // Store the mentioned agent
       ts: nowIso(),
       readBy: {},
     };
@@ -309,7 +349,7 @@ export class Room {
 
   // ----------------------------------------------------------------- tasks
 
-  addTask(from, { title, scope = '', notes = '', assignTo = '' }) {
+  addTask(from, { title, scope = '', notes = '', assignTo = '', dependsOn = '' }) {
     const task = {
       id: this.#id('task', 'T'),
       title,
@@ -322,6 +362,7 @@ export class Room {
       updatedAt: nowIso(),
       history: [{ ts: nowIso(), who: from, what: assignTo ? `created, assigned to ${assignTo}` : 'created' }],
     };
+    if (dependsOn) task.dependsOn = dependsOn;
     this.state.tasks.push(task);
     this.touch(from);
     this.save();
@@ -344,7 +385,7 @@ export class Room {
       if (task.status !== 'claimed' || !task.owner) continue;
       const owner = this.state.agents[task.owner];
       const quiet = Date.now() - (owner?.lastSeen || 0);
-      if (quiet < CLAIM_STALE_MS) continue;
+      if (quiet < claimStaleMs()) continue;
       task.history.push({ ts: nowIso(), who: 'system', what: `claim lapsed — ${task.owner} silent ${Math.round(quiet / 60000)} min` });
       task.lastOwner = task.owner;
       task.owner = null;
@@ -370,11 +411,26 @@ export class Room {
       return {
         ok: false,
         error: `${id} is being worked by ${task.owner} (last active ${quiet} min ago). Pick another one — `
-          + `it frees up automatically after 30 min of their silence.`,
+          + `it frees up automatically after ${Math.round(claimStaleMs() / 60000)} min of their silence.`,
         task,
       };
     }
     if (task.status === 'done') return { ok: false, error: `${id} is already done.`, task };
+
+    // Check dependencies
+    if (task.dependsOn) {
+      const dep = this.task(task.dependsOn);
+      if (dep && dep.status !== 'done') {
+        task.status = 'blocked';
+        this.save();
+        return {
+          ok: false,
+          error: `${id} depends on ${task.dependsOn} (status: ${dep.status}). It will unblock when the dependency is done.`,
+          task,
+        };
+      }
+    }
+
     task.owner = agent;
     task.status = 'claimed';
     task.updatedAt = nowIso();
@@ -392,6 +448,17 @@ export class Room {
     task.updatedAt = nowIso();
     task.history.push({ ts: nowIso(), who: agent, what: `${status || 'note'}${notes ? `: ${notes}` : ''}` });
     this.touch(agent);
+
+    // If this task was completed, unblock any tasks depending on it
+    if (status === 'done') {
+      for (const t of this.state.tasks) {
+        if (t.dependsOn === id && t.status === 'blocked') {
+          t.status = 'open';
+          t.history.push({ ts: nowIso(), who: 'system', what: `unblocked — dependency ${id} completed` });
+        }
+      }
+    }
+
     this.save();
     return { ok: true, task };
   }
@@ -403,7 +470,7 @@ export class Room {
 
   // -------------------------------------------------------------- findings
 
-  addFinding(agent, { title, severity = 'info', target = '', evidence = '', repro = '' }) {
+  addFinding(agent, { title, severity = 'info', target = '', evidence = '', repro = '', createsTask = false }) {
     const finding = {
       id: this.#id('finding', 'F'),
       title,
@@ -419,6 +486,23 @@ export class Room {
     this.touch(agent);
     this.save();
     this.#wake();
+
+    // Auto-create a verification task for the partner
+    if (createsTask) {
+      // Find an agent who isn't the reporter
+      const partner = Object.keys(this.state.agents).find((a) => a !== agent);
+      const task = this.addTask(agent, {
+        title: `Verify ${finding.id}: ${title}`,
+        scope: 'peer review',
+        notes: `Auto-created from finding ${finding.id}. Independently reproduce: ${evidence || repro || 'see finding details.'}`,
+        assignTo: partner,
+        goal: finding.severity === 'critical' || finding.severity === 'high' ? undefined : undefined,
+      });
+      // Link finding to task
+      finding.verificationTask = task.id;
+      this.save();
+    }
+
     return finding;
   }
 

@@ -74,6 +74,19 @@ check('second agent is blocked from the same task',
 const done = await call('alpha', 'task_update', { id: 'T1', status: 'done', notes: 'tokens are 256-bit, ruled out' });
 check('task can be completed', done.text.includes('now done'));
 
+console.log('\n  task dependencies');
+// T1 is already done above — so a task depending on it must be claimable right away.
+await call('alpha', 'task_add', { title: 'Verify the password reset fix', depends_on: 'T1' });
+const depMet = await call('beta', 'task_claim', { id: 'T2' });
+check('a task whose dependency is done can be claimed', !depMet.isError, depMet.text);
+await call('alpha', 'task_add', { title: 'Exploit the password reset', scope: 'auth' });
+await call('alpha', 'task_add', { title: 'Write the advisory', depends_on: 'T3' });
+const depBlock = await call('beta', 'task_claim', { id: 'T4' });
+check('a task with an unfinished dependency is rejected as blocked',
+  depBlock.isError && depBlock.text.includes('depends on T3') && room.task('T4').status === 'blocked', depBlock.text);
+const depOpen = await call('alpha', 'task_update', { id: 'T3', status: 'done' });
+check('completing the dependency reopens the blocked task', room.task('T4').status === 'open', JSON.stringify(room.task('T4')));
+
 console.log('\n  messaging');
 await call('beta', 'send', { text: 'Found a reflected param on /search', to: 'alpha' });
 const inbox = await call('alpha', 'inbox');
@@ -82,6 +95,13 @@ check('messages are consumed once', (await call('alpha', 'inbox')).text.includes
 check('sender does not receive their own broadcast', (await call('beta', 'inbox')).text.includes('No unread'));
 const badTarget = await call('alpha', 'send', { text: 'hi', to: 'gamma' });
 check('sending to an unknown agent errors usefully', badTarget.isError && badTarget.text.includes('Known agents'));
+await call('alpha', 'send', { text: 'review my F1 @beta when you get a chance' });
+const mentioned = room.state.messages[room.state.messages.length - 1];
+check('@mention is recognised for a known agent', mentioned.mention === 'beta');
+check('an @mention is treated as urgent', mentioned.urgent === true);
+await call('alpha', 'send', { text: 'check @ghost-agent in scope' });
+const ghostMention = room.state.messages[room.state.messages.length - 1];
+check('@mention of an unknown name is not marked urgent', ghostMention.urgent === false && ghostMention.mention === null);
 
 console.log('\n  long-polling inbox');
 const started = Date.now();
@@ -103,6 +123,31 @@ check('a finding pings the partner for peer review', review.text.includes('F1') 
 await call('alpha', 'finding_update', { id: 'F1', status: 'confirmed', note: 'reproduced with a second account' });
 const findings = await call('beta', 'findings');
 check('peer confirmation is recorded', findings.text.includes('"status": "confirmed"'));
+
+console.log('\n  finding → task auto-link');
+await call('beta', 'finding_add', {
+  title: 'Stored XSS in the dashboard',
+  severity: 'high',
+  target: '/dashboard',
+  evidence: 'agent message text is injected unescaped',
+  creates_task: true,
+});
+const linkTask = room.state.tasks.find((t) => t.title.includes('Verify F2'));
+check('a finding with creates_task spawns a verification task', Boolean(linkTask), JSON.stringify(room.state.tasks));
+check('the verification task is assigned to the partner, not the reporter',
+  linkTask?.owner === 'alpha', `owner=${linkTask?.owner}`);
+check('the finding records its verification task', room.state.findings.find((f) => f.id === 'F2')?.verificationTask === linkTask?.id);
+
+console.log('\n  board search');
+const searchHit = await (await fetch(`${base}/api/search?q=idor&token=${TOKEN}`)).json();
+check('search finds the matching finding', searchHit.count >= 1 && searchHit.results.some((r) => r.type === 'finding' && r.id === 'F1'), JSON.stringify(searchHit));
+const searchAuth = await (await fetch(`${base}/api/search?q=idor`)).json();
+check('search requires the token', !searchAuth?.results);
+
+console.log('\n  relay version');
+const version = await (await fetch(`${base}/api/version`)).json();
+check('version endpoint is public', version.name === 'claude-bros' && Number.isInteger(version.toolCount));
+check('version exposes the tool surface', Array.isArray(version.tools) && version.tools.includes('finding_add'));
 
 console.log('\n  healing an older state file');
 const older = `${process.env.TMPDIR || '/tmp'}/bros-old-${process.pid}.json`;
@@ -306,6 +351,27 @@ check('the task is open again', room.task(lapsed).status === 'open');
 check('who held it is remembered', room.task(lapsed).lastOwner === 'beta');
 room.state.agents.beta.lastSeen = Date.now();
 
+console.log('\n  claims lapse on any glance, not just board/claim');
+const dashLapse = await newTask('beta', { title: 'lapsed by a plain state read' });
+await call('beta', 'inbox'); await call('beta', 'board');
+await call('beta', 'task_claim', { id: dashLapse });
+room.state.agents.beta.lastSeen = Date.now() - 40 * 60_000;
+await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
+check('a dashboard state read lapses a stale claim', room.task(dashLapse).status === 'open');
+room.state.agents.beta.lastSeen = Date.now();
+
+console.log('\n  claim window is tunable via env');
+const winTask = await newTask('beta', { title: 'short-window claim' });
+await call('beta', 'inbox'); await call('beta', 'board');
+await call('beta', 'task_claim', { id: winTask });
+room.state.agents.beta.lastSeen = Date.now() - 7 * 60_000;
+const prevWin = process.env.BROS_CLAIM_STALE_MS;
+process.env.BROS_CLAIM_STALE_MS = '6000';
+const releasedWin = room.releaseStaleClaims();
+if (prevWin === undefined) delete process.env.BROS_CLAIM_STALE_MS; else process.env.BROS_CLAIM_STALE_MS = prevWin;
+check('a 6-second window releases a 7-minute-silent owner', releasedWin.includes(winTask));
+room.state.agents.beta.lastSeen = Date.now();
+
 console.log('\n  message dedup, sequencing, threading');
 const first = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
 const again = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
@@ -345,14 +411,94 @@ check('agents are warned in the board tool output',
   warned.text.includes('WARNING') && warned.text.includes('192.168.15.31'));
 check('the warning names the fix', warned.text.includes('--as name'));
 room.state.agents.alpha.hosts = ['relay-host'];
-const afterClear = await call('alpha', 'board');
-check('clearing the extra host clears that agent\'s warning',
-  !afterClear.text.includes('the name "alpha" is in use'),
-  afterClear.text.split('\n').find((l) => l.includes('WARNING')) || '');
+// zulu picked up a second host ('relay-host' from its join call, then the fake
+// one in the collision test) — clear it or the board keeps warning about zulu.
+room.state.agents.zulu.hosts = ['relay-host'];
+check('clearing the extra host clears the warning', !(await call('alpha', 'board')).text.includes('WARNING'));
 
 console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
-check('dashboard renders', page.status === 200 && (await page.text()).includes('claude-bros'));
+const pageText = await page.text();
+check('dashboard renders', page.status === 200 && pageText.includes('claude-bros'));
+check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
+check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
+// Regression for the dashboard rewrite: esc() must actually escape (agent text is
+// injected into innerHTML) and the state fetch must build a real ?token= query.
+const escSource = pageText.match(/const esc =[^}]+}/)?.[0] || '';
+check('dashboard esc() actually escapes, no stored XSS',
+  escSource.includes("'&':'&amp;'") && escSource.includes("'<':'&lt;'"), escSource.slice(0, 80));
+const fetchSource = pageText.match(/const token =[^;]+;[^;]*;[^;]*;/)?.[0] || '';
+check('dashboard fetches state with a real token query',
+  pageText.includes("'?token=' + encodeURIComponent(token)") && !pageText.includes("'&' + location.search"), fetchSource.slice(0, 80));
+const stateFetch = await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
+check('the dashboard state endpoint is live', stateFetch.room === room.name);
+
+console.log('\n  CLI argument layer — the subcommand must not leak into args');
+// Regression for the argv split: `join <url>` must record the URL, not "join",
+// and `send "hello"` must send "hello", not "send hello".
+// NB: async spawn, not spawnSync — spawnSync blocks this process's event loop,
+// so the test relay here in this same process could never answer the child.
+const { spawn } = await import('node:child_process');
+const osMod = await import('node:os');
+const fsMod = await import('node:fs');
+const pathMod = await import('node:path');
+const cli = pathMod.join(import.meta.dirname, '..', 'bin', 'claude-bros.js');
+const runCli = (args, envHome, cwd) => new Promise((resolve) => {
+  const child = spawn('node', [cli, ...args], { env: { ...process.env, HOME: envHome }, cwd });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { err += d; });
+  child.on('close', (code) => resolve({ code, out, err }));
+});
+
+// The join CLI installs hooks into `.claude/settings.local.json` — sandbox the
+// cwd so the test never touches a real repo's settings file.
+const sandbox = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-cli-'));
+fsMod.mkdirSync(pathMod.join(sandbox, '.claude'), { recursive: true });
+const j = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
+let cliCfg = null;
+try {
+  cliCfg = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude-bros', 'config.json'), 'utf8'));
+} catch {}
+check('join records the real relay URL, not the command name',
+  cliCfg?.url === 'http://cli-test.invalid:7777', JSON.stringify(cliCfg));
+check('join still passes its --as and --token through', cliCfg?.agent === 'cliagent' && cliCfg?.token === 't');
+check('join exits cleanly even when the relay is unreachable', j.code === 0, j.out + j.err);
+// Regression for the SessionStart hook being dropped in the CLI rewrite: join
+// must install BOTH hook events, into the project-scoped settings.local.json.
+let hookSettings = null;
+try {
+  hookSettings = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), 'utf8'));
+} catch {}
+const hookEvents = Object.keys(hookSettings?.hooks || {});
+check('join installs the Stop hook', hookEvents.includes('Stop'), JSON.stringify(hookEvents));
+check('join installs the SessionStart hook too', hookEvents.includes('SessionStart'), JSON.stringify(hookEvents));
+check('hook commands carry the right event flag',
+  hookSettings?.hooks?.Stop?.[0]?.hooks?.[0]?.command.includes('--event stop') &&
+  hookSettings?.hooks?.SessionStart?.[0]?.hooks?.[0]?.command.includes('--event session-start'),
+  JSON.stringify(hookSettings?.hooks));
+// ...and a second join does not duplicate the entries.
+const j2 = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
+let hookSettings2 = null;
+try {
+  hookSettings2 = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), 'utf8'));
+} catch {}
+check('a second join does not duplicate hooks',
+  hookSettings2?.hooks?.Stop?.length === 1 && hookSettings2?.hooks?.SessionStart?.length === 1,
+  JSON.stringify(hookSettings2?.hooks?.Stop?.length));
+
+const sendHome = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-send-'));
+fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });
+fsMod.writeFileSync(pathMod.join(sendHome, '.claude-bros', 'config.json'), JSON.stringify({
+  url: base, agent: 'clisender', token: TOKEN, role: '', scope: '',
+}));
+const s = await runCli(['send', 'hello-cli', '--to', 'alpha'], sendHome, sendHome);
+const sentByCli = room.state.messages.find((m) => m.from === 'human' && m.text.includes('hello-cli'));
+check('send sends the exact text, no command name prepended',
+  s.code === 0 && sentByCli?.text === 'hello-cli', `${s.out} text=${sentByCli?.text}`);
+fsMod.rmSync(sandbox, { recursive: true, force: true });
+fsMod.rmSync(sendHome, { recursive: true, force: true });
 
 server.close();
 console.log(`\n  ${failed ? '\x1b[31m' : '\x1b[32m'}${passed} passed, ${failed} failed\x1b[0m\n`);

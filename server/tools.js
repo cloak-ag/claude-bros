@@ -82,6 +82,7 @@ export const TOOL_DEFS = [
         notes: str('Context, hypotheses, or anything the person who picks it up needs.'),
         assign_to: str('Optionally assign directly to an agent by name instead of leaving it open.'),
         goal: str('Goal id this serves, e.g. "G1". Link it — that is what makes goal progress real.'),
+        depends_on: { type: 'string', description: 'Optional task id (e.g. "T3") that must be done before this task can be claimed. Keeps the board from drifting into unblocked work.' },
       },
       required: ['title'],
     },
@@ -202,6 +203,7 @@ export const TOOL_DEFS = [
         target: str('Exact endpoint, file:line, or component.'),
         evidence: str('REQUIRED (or repro). What you actually observed: file:line, the real response, the code path. Your partner must be able to reproduce this without asking you — a title-only finding is rejected.'),
         repro: str('REQUIRED (or evidence). The minimal steps or request that demonstrates it.'),
+        creates_task: { type: 'boolean', description: 'If true, auto-create a verification task assigned to your partner. Default false.' },
       },
       required: ['title', 'target'],
     },
@@ -470,9 +472,16 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   const withNag = (result) => {
     if (!result.content?.[0]) return result;
     if (staleStatus && !unbriefed) {
-      const mins = Math.round((Date.now() - (room.state.agents[agent].statusAt || 0)) / 60000);
+      // Seconds-granular liveness so the agent can see exactly how long it has
+      // looked dead to the team, not just "a while".
+      const rec = room.state.agents[agent];
+      const statusAt = rec.statusAt || 0;
+      const lastAgo = rec.lastSeen ? Math.max(0, Math.floor((Date.now() - rec.lastSeen) / 1000)) : null;
+      const agoTxt = !statusAt ? 'never set'
+        : (Date.now() - statusAt) < 60_000 ? `${Math.floor((Date.now() - statusAt) / 1000)}s old`
+          : `${Math.floor((Date.now() - statusAt) / 60000)} min old`;
       result.content[0].text =
-        `[heartbeat] Your status is ${Number.isFinite(mins) && mins < 10000 ? `${mins} min old` : 'never set'} — ` +
+        `[heartbeat] Your status is ${agoTxt} and your last activity was ${lastAgo == null ? 'never recorded' : `${lastAgo}s ago`} — ` +
         'to everyone else you look stalled. Call `status` with one line on what you are doing right now, ' +
         'and keep doing it every few minutes.\n\n' + result.content[0].text;
     }
@@ -545,11 +554,15 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       if (args.goal && !room.state.goals.some((g) => g.id === args.goal)) {
         return fail(`No goal ${args.goal}. Existing goals: ${room.state.goals.map((g) => g.id).join(', ') || '(none yet)'}`);
       }
+      if (args.depends_on && !room.state.tasks.some((t) => t.id === args.depends_on)) {
+        return fail(`No task ${args.depends_on} to depend on.`);
+      }
       const task = room.addTask(agent, {
         title: args.title,
         scope: args.scope,
         notes: args.notes,
         assignTo: args.assign_to,
+        dependsOn: args.depends_on,
       });
       if (args.goal) {
         task.goal = args.goal;
@@ -557,7 +570,8 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       }
       return text(
         `Added ${task.id}: ${task.title}${task.owner ? ` (assigned to ${task.owner})` : ' (open)'}` +
-          (args.goal ? ` → ${args.goal}` : '\nNo goal linked. If this serves a shared goal, add one with goal_add and link it.'),
+          (args.goal ? ` → ${args.goal}` : '\nNo goal linked. If this serves a shared goal, add one with goal_add and link it.') +
+          (args.depends_on ? ` [depends on ${args.depends_on}]` : '')
       );
     }
 
@@ -677,7 +691,7 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       if (!args.target) {
         return fail('REJECTED: finding_add requires "target" — the exact endpoint, file:line, or component. Without it nobody knows where to look.');
       }
-      const finding = room.addFinding(agent, args);
+      const finding = room.addFinding(agent, { ...args, createsTask: args.creates_task });
       // A target that looks like a path joins the coverage map automatically.
       if (args.target && /[/\\].*\.[a-z]{1,5}(:|$)/i.test(args.target)) {
         room.linkFinding(args.target.split(':')[0], finding.id);

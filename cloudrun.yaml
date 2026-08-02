@@ -1,0 +1,57 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: claude-bros
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # Single instance — JSON state file persists only in memory/disk
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        # CPU only while handling requests (cost optimization)
+        run.googleapis.com/cpu-throttling: "true"
+        # Memory for Node + state file
+        run.googleapis.com/memory: "512Mi"
+        # 5 min request timeout (long-polling inbox waits up to 2 min)
+        run.googleapis.com/timeout: "300s"
+    spec:
+      containerConcurrency: 80
+      containers:
+        - image: ${IMAGE}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BROS_PORT
+              value: "8080"
+            - name: BROS_ROOM
+              value: "bounty"
+            # Token comes from Secret Manager (set at deploy time)
+            - name: BROS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bros-token
+                  key: token
+            # Optional: Tailscale not needed on Cloud Run (public HTTPS)
+            - name: BROS_NO_TAILSCALE_NOTE
+              value: "true"
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          # Health check — Cloud Run probes this
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5

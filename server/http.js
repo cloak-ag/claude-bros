@@ -167,11 +167,30 @@ export function createServer({ room, token, quiet = false }) {
 
     if (url.pathname === '/healthz') return json(res, 200, { ok: true, room: room.name });
 
+    // Version endpoint — public, so agents can poll for updates without auth
+    if (url.pathname === '/api/version') {
+      const toolNames = TOOL_DEFS.map((t) => t.name).sort();
+      const crypto = await import('node:crypto');
+      const toolHash = crypto.createHash('sha256').update(toolNames.join(',')).digest('hex').slice(0, 12);
+      return json(res, 200, {
+        version: SERVER_INFO.version,
+        name: SERVER_INFO.name,
+        toolCount: toolNames.length,
+        tools: toolNames,
+        toolHash,
+      });
+    }
+
     if (!authorized(url, req)) {
       const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
       if (!quiet) console.log(`\x1b[31m  ${new Date().toTimeString().slice(0, 8)}  REJECTED (bad token)  from ${ip}\x1b[0m`);
       return json(res, 401, { error: 'Bad or missing token. Append ?token=... to the URL.' });
     }
+
+    // Lapsed claims should read as lapsed wherever people glance — the dashboard
+    // state read is the most common glance and it never calls the board tool.
+    // Release on every authenticated request (cheap, idempotent, O(tasks)).
+    room.releaseStaleClaims();
 
     // ------------------------------------------------------------ MCP
     if (url.pathname === '/mcp') {
@@ -290,6 +309,43 @@ export function createServer({ room, token, quiet = false }) {
       } catch (err) {
         return json(res, 400, { ok: false, error: err.message });
       }
+    }
+
+    // Search endpoint — search messages, findings, files
+    if (url.pathname === '/api/search') {
+      const q = (url.searchParams.get('q') || '').toLowerCase().trim();
+      const limit = Math.min(Number(url.searchParams.get('limit')) || 50, 200);
+      if (!q) return json(res, 400, { error: 'q parameter required' });
+      const results = [];
+      // Search messages
+      for (const m of room.state.messages) {
+        const hay = `${m.from} ${m.to} ${m.text}`.toLowerCase();
+        if (hay.includes(q)) {
+          results.push({ type: 'message', id: m.id, from: m.from, to: m.to, ts: m.ts, text: m.text.slice(0, 200) });
+          if (results.length >= limit) break;
+        }
+      }
+      // Search findings
+      if (results.length < limit) {
+        for (const f of room.state.findings) {
+          const hay = `${f.title} ${f.target || ''} ${f.evidence || ''}`.toLowerCase();
+          if (hay.includes(q)) {
+            results.push({ type: 'finding', id: f.id, title: f.title, target: f.target, severity: f.severity, status: f.status });
+            if (results.length >= limit) break;
+          }
+        }
+      }
+      // Search files
+      if (results.length < limit) {
+        for (const f of Object.values(room.state.files || {})) {
+          const hay = `${f.path} ${(f.reviews || []).map((r) => r.note).join(' ')}`.toLowerCase();
+          if (hay.includes(q)) {
+            results.push({ type: 'file', path: f.path, reviews: f.reviews.length });
+            if (results.length >= limit) break;
+          }
+        }
+      }
+      return json(res, 200, { query: q, count: results.length, results });
     }
 
     if (url.pathname === '/api/send' && req.method === 'POST') {

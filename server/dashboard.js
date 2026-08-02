@@ -37,6 +37,9 @@ ${NAV_CSS}
   .pane::-webkit-scrollbar-thumb:hover { background:var(--muted); }
   .pane { scrollbar-width:thin; scrollbar-color:var(--rule) transparent; }
   #messages { max-height:360px; }
+  #files { max-height:460px; overflow-y:auto; }
+  #files table { min-width:720px; }
+  #files thead th { position:sticky; top:0; background:var(--surface); z-index:1; }
   .row { padding:9px 0; border-bottom:1px solid var(--line); word-break:break-word; }
   .row:last-child { border-bottom:0; }
   .empty { color:var(--muted); font-style:italic; font-size:13px; }
@@ -47,19 +50,14 @@ ${NAV_CSS}
   .who { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-weight:600; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 2px var(--surface); }
   .off { opacity:.42; }
-  /* liveness ring around the identity dot: fresh / slow / silent */
-  .live { display:inline-flex; align-items:center; gap:5px; }
+  /* liveness ring: a quiet agent's identity dot gets a yellow ring; offline dims the row */
+  .who.st-quiet .dot { box-shadow:0 0 0 2px var(--surface), 0 0 0 3px var(--warning); }
+  /* legacy beat classes from main (kept for compatibility) */
   .beat { width:7px; height:7px; border-radius:50%; flex:none; }
   .beat.fresh { background:var(--good); }
   .beat.slow  { background:var(--warning); }
   .beat.cold  { background:var(--critical); }
   .beat.gone  { background:var(--muted); }
-  .digest { border-left:2px solid var(--series-1); padding:2px 0 2px 12px; margin-bottom:12px; }
-  .digest b { font-family:var(--mono); font-size:12px; color:var(--series-1); }
-  .digest ul { margin:4px 0 0; padding-left:18px; }
-  .digest li { font-size:12.5px; color:var(--ink-2); margin-bottom:2px; }
-  .reply { font-size:11px; font-family:var(--mono); color:var(--muted);
-           border-left:2px solid var(--line); padding-left:7px; margin-bottom:3px; }
 
   /* progress meter: thin, rounded data-end, anchored left */
   .meter { height:7px; background:var(--track); border-radius:4px; overflow:hidden; margin:8px 0 4px; }
@@ -73,63 +71,66 @@ ${NAV_CSS}
   .pill.suspicious,.pill.high { color:var(--serious); border-color:var(--serious); }
   .pill.vulnerable,.pill.critical { color:var(--critical); border-color:var(--critical); }
   .pill.skipped,.pill.info,.pill.low,.pill.reviewed { color:var(--muted); }
+  .pill.active { color:var(--good); border-color:var(--good); }
+  .pill.quiet { color:var(--warning); border-color:var(--warning); }
+  .pill.offline { color:var(--critical); border-color:var(--critical); }
+
+  /* message threads: replies nest under their parent behind a guide line */
+  .thread { border-left:2px solid var(--rule); padding-left:10px; margin:2px 0 10px; }
+  .thread .row { border-bottom:0; padding:4px 0; }
+  .thread + .thread { margin-top:4px; }
+  .replyto { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .hb { font-variant-numeric:tabular-nums; }
+  .digest { border-left:2px solid var(--series-1); padding:2px 0 2px 12px; margin-bottom:12px; }
+  .digest b { font-family:var(--mono); font-size:12px; color:var(--series-1); }
+  .digest ul { margin:4px 0 0; padding-left:18px; }
+  .digest li { font-size:12.5px; color:var(--ink-2); margin-bottom:2px; }
 
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.07em;
-       color:var(--muted); font-weight:600; padding:0 10px 8px 0; border-bottom:1px solid var(--rule); }
+       color:var(--muted); padding:9px 10px 9px 0; border-bottom:2px solid var(--rule); }
   td { padding:9px 10px 9px 0; border-bottom:1px solid var(--line); vertical-align:top; }
   tr:last-child td { border-bottom:0; }
   .scroll { overflow-x:auto; }
-  #files { max-height:460px; overflow-y:auto; }
-  #files table { min-width:720px; }
-  #files thead th { position:sticky; top:0; background:var(--surface); z-index:1; }
   .path { font-family:var(--mono); font-size:12.5px; word-break:break-all; }
+  code.mono { font-family:var(--mono); font-size:12.5px; }
 
   .alert { border:1px solid var(--critical); background:color-mix(in srgb, var(--critical) 10%, transparent);
-           border-radius:12px; padding:12px 15px; margin-bottom:18px; line-height:1.6; }
-  .alert.warn { border-color:var(--warning); background:color-mix(in srgb, var(--warning) 12%, transparent); }
-  .alert code { background:var(--ring); padding:1px 5px; border-radius:4px; }
-  body.offline .stats, body.offline .board { opacity:.4; filter:grayscale(.8); pointer-events:none; }
-  .envgrid { display:grid; gap:8px 22px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
-  .envgrid div { display:flex; gap:10px; align-items:baseline; min-width:0; }
-  .envgrid b { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
-               font-weight:600; flex:none; min-width:62px; }
-  .envgrid span { font-family:var(--mono); font-size:12.5px; word-break:break-all; }
-  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:10px; }
+           border-radius:12px; padding:12px 14px; margin-bottom:12px; }
+  .alert.warn { border-color:var(--warning); background:color-mix(in srgb, var(--warning) 10%, transparent); }
+  .alert b { font-size:13px; }
 </style>
 </head>
 <body>
-<div class="head">
-  <h1>claude-bros <span class="room">· ${roomName}</span></h1>
-  ${nav('board', query)}
-  <div class="when" id="when">connecting…</div>
-</div>
-<div id="offline"></div>
-<div id="clash"></div>
-<div class="stats" id="stats"></div>
-<div class="board" id="board">
-  <section><h2>Shared environment</h2><div id="env"></div></section>
-  <section><h2>Goals</h2><div id="goals"></div></section>
+${nav('dashboard', roomName)}
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+
+  <section style="margin-top:18px"><h2>Shared environment</h2><div class="envgrid" id="env"></div></section>
+
   <div class="grid">
-    <section><h2>Agents</h2><div class="pane" id="agents"></div></section>
-    <section><h2>Task board</h2><div class="pane" id="tasks"></div></section>
-    <section><h2>Findings</h2><div class="pane" id="findings"></div></section>
+    <section><h2>Goals</h2><div class="pane" id="goals"></div></section>
+    <section><h2>Agents — live heartbeat</h2><div class="pane" id="agents"></div></section>
+    <section><h2>Tasks</h2><div class="pane" id="tasks"></div></section>
   </div>
-  <section style="margin-top:18px"><h2>File coverage — the shared brain</h2><div class="scroll pane" id="files"></div>
-    <div class="legend">
-      <span>✓ clean</span><span>◐ partial</span><span>▲ suspicious</span>
-      <span>✕ vulnerable</span><span>– skipped</span><span>‖ reviewers disagree</span>
-    </div>
-  </section>
-  <section><h2>Digest <span style="text-transform:none;letter-spacing:0">· what actually got decided</span></h2>
-    <div id="digest"></div></section>
-  <section><h2>Traffic <span style="text-transform:none;letter-spacing:0">· times UTC−3</span></h2>
-    <div class="pane" id="messages"></div></section>
+
+  <div class="grid">
+    <section><h2>File coverage — the shared brain</h2><div class="pane scroll" id="files"></div></section>
+    <section><h2>Findings</h2><div class="pane" id="findings"></div></section>
+    <section><h2>Digest — what got decided</h2><div class="pane" id="digest"></div></section>
+  </div>
+
+  <section style="margin-top:18px"><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
 </div>
+
 <script>
 const token = new URLSearchParams(location.search).get('token');
 const q = token ? '?token=' + encodeURIComponent(token) : '';
 const el = (id) => document.getElementById(id);
+// Agent-supplied text flows through this into innerHTML — it must actually
+// escape, or any message/status/title on the board becomes stored XSS that
+// runs in the dashboard's origin and can read the relay token.
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fill = (node, items, render) => {
   node.innerHTML = items.length
@@ -168,25 +169,40 @@ const ago = (ts) => {
   return Math.floor(h / 24) + 'd ago';
 };
 
+const ACTIVE_MS = 5 * 60 * 1000;
+const QUIET_MS = 15 * 60 * 1000;
+// Human-facing liveness: green < 5 min, yellow < 15 min, red past that or never.
+// Deliberately separate from the board tool's binary "online" (a 90 s window).
+const liveness = (a) => {
+  const t = ms(a.lastSeen);
+  if (!t) return 'offline';
+  const age = Date.now() - t;
+  return age < ACTIVE_MS ? 'active' : age < QUIET_MS ? 'quiet' : 'offline';
+};
+// Last-activity heartbeat at second granularity: "now", "12s ago", "3m 04s ago".
+const hb = (a) => {
+  const t = ms(a.lastSeen);
+  if (!t) return 'never';
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 5) return 'now';
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60), r = s % 60;
+  return (r ? m + 'm ' + String(r).padStart(2, '0') + 's' : m + 'm') + ' ago';
+};
+
 const ICON = { clean:'✓', partial:'◐', suspicious:'▲', vulnerable:'✕', skipped:'–', reviewed:'·' };
 const pill = (kind, label) => '<span class="pill ' + esc(kind) + '">' + (ICON[kind] || '') + ' ' + esc(label || kind) + '</span>';
 
 // Identity colour is assigned by stable name order, never by rank or activity.
 let palette = {};
 const colourFor = (name) => palette[name] || 'var(--muted)';
-const who = (name, online) => '<span class="who' + (online === false ? ' off' : '') + '">'
-  + '<span class="dot" style="background:' + colourFor(name) + '"></span>' + esc(name) + '</span>';
-
-let lastGood = null;
-function goStale(why) {
-  document.body.classList.add('offline');
-  el('when').textContent = 'stale';
-  el('offline').innerHTML = '<div class="alert warn"><b>' + esc(why) + '</b><br>'
-    + 'Everything below is frozen from '
-    + (lastGood ? 'the last update at ' + at(lastGood) + ' UTC\u22123' : 'an earlier page load')
-    + ' and is probably out of date. On the relay machine, run:<br>'
-    + '<code>node bin/claude-bros.js serve --token &lt;your token&gt;</code></div>';
-}
+const who = (name, st) => {
+  const cls = ['who'];
+  if (st === 'offline') cls.push('off');
+  if (st) cls.push('st-' + st);
+  return '<span class="' + cls.join(' ') + '">'
+    + '<span class="dot" style="background:' + colourFor(name) + '"></span>' + esc(name) + '</span>';
+};
 
 async function tick() {
   let s;
@@ -201,7 +217,7 @@ async function tick() {
   document.body.classList.remove('offline');
   el('offline').innerHTML = '';
   lastGood = new Date();
-  el('when').textContent = 'updated ' + at(lastGood) + ' UTC\u22123';
+  el('when').textContent = 'updated ' + at(lastGood) + ' UTC−3';
 
   const agents = Object.values(s.agents || {});
   const names = agents.map((a) => a.name).sort();
@@ -216,7 +232,8 @@ async function tick() {
         + '<code>join</code> with a different <code>--as</code> name.</div>').join('')
     : '';
 
-  const online = agents.filter((a) => Date.now() - (a.lastSeen || 0) < 90000);
+  const counts = { active: 0, quiet: 0, offline: 0 };
+  agents.forEach((a) => { counts[liveness(a)] += 1; });
   const tasks = s.tasks || [];
   const goals = s.goals || [];
   const files = Object.values(s.files || {});
@@ -242,8 +259,9 @@ async function tick() {
   const worst = ['critical','high','medium','low','info'].find((sev) => openFindings.some((f) => f.severity === sev));
 
   el('stats').innerHTML = [
-    '<div class="stat"><div class="n">' + online.length + '<span class="muted" style="font-size:15px">/' + agents.length + '</span></div>'
-      + '<div class="l">agents online</div><div class="sub">' + (agents.length ? esc(names.join(', ')) : '—') + '</div></div>',
+    '<div class="stat"><div class="n">' + counts.active + '<span class="muted" style="font-size:15px">/' + agents.length + '</span></div>'
+      + '<div class="l">agents up</div><div class="sub">' + esc(names.join(', ') || '—')
+      + ' · ' + counts.quiet + ' quiet / ' + counts.offline + ' offline</div></div>',
     '<div class="stat"><div class="n">' + goalPct + '%</div><div class="l">goal progress</div>'
       + '<div class="meter"><i style="width:' + goalPct + '%"></i></div>'
       + '<div class="sub">' + linkedDone + '/' + linked + ' linked tasks · '
@@ -272,28 +290,15 @@ async function tick() {
     + (g.detail ? '<div class="muted">' + esc(g.detail) + '</div>' : '')
     + (g.status !== 'active' ? ' ' + pill(g.status === 'done' ? 'clean' : 'skipped', g.status) : ''));
 
-  // Name, what they are doing right now, and when they last spoke. Role and
-  // scope are standing facts, not activity — they live on the board tool.
-  const beatOf = (a) => {
-    if (!a.lastSeen) return ['gone', 'never checked in'];
-    const mins = (Date.now() - a.lastSeen) / 60000;
-    if (mins < 5) return ['fresh', 'active'];
-    if (mins < 15) return ['slow', 'quiet ' + Math.round(mins) + 'm'];
-    return ['cold', 'silent ' + Math.round(mins) + 'm'];
-  };
+  // Agents pane: liveness pill + seconds-granular heartbeat
   fill(el('agents'), agents, (a) => {
-    const up = Date.now() - (a.lastSeen || 0) < 90000;
-    const [beat, beatLabel] = beatOf(a);
-    const statusMins = a.statusAt ? Math.round((Date.now() - a.statusAt) / 60000) : null;
-    return who(a.name, up)
-      + ' <span class="live"><span class="beat ' + beat + '"></span>'
-      + '<span class="muted">' + esc(beatLabel) + '</span></span>'
-      + '<div class="ink2" style="font-size:13px;margin-top:3px">' + esc(a.status || 'idle')
-      + (statusMins !== null && statusMins >= 5
-          ? ' <span class="muted">(said ' + statusMins + 'm ago)</span>' : '') + '</div>'
-      + '<div class="muted">' + (up
-          ? 'online · seen ' + ago(a.lastSeen)
-          : 'last seen ' + ago(a.lastSeen) + (a.lastSeen ? ' · ' + onDay(a.lastSeen) + at(a.lastSeen) : '')) + '</div>';
+    const st = liveness(a);
+    const t = ms(a.lastSeen);
+    return who(a.name, st)
+      + '<div class="ink2" style="font-size:13px;margin-top:3px">' + esc(a.status || 'idle') + '</div>'
+      + '<div class="muted">' + pill(st, st === 'active' ? 'up' : st)
+      + ' <span class="hb">last activity ' + hb(a) + '</span>'
+      + (st === 'offline' && t ? ' · ' + onDay(t) + at(t) : '') + '</div>';
   });
 
   const order = { claimed:0, blocked:1, open:2, done:3 };
@@ -332,6 +337,7 @@ async function tick() {
       + '</tbody></table>'
     : '<div class="empty">No files recorded yet — agents log them with the <code>file_review</code> tool.</div>';
 
+  // ---- Digest pane (from main)
   const digests = [...(s.digests || [])].reverse();
   el('digest').innerHTML = digests.length
     ? digests.slice(0, 4).map((d) => '<div class="digest"><b>' + esc(d.id) + '</b> '
@@ -339,12 +345,53 @@ async function tick() {
         + '<ul>' + d.lines.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul></div>').join('')
     : '<div class="empty">No digest yet — one is written every 20 messages or 15 minutes of activity.</div>';
 
-  fill(el('messages'), (s.messages || []).slice(-40).reverse(), (m) =>
-    '<span class="mono">' + esc(onDay(m.ts) + at(m.ts)) + '</span>'
+  // ---- Messages pane with thread grouping (our improvement)
+  const msgRow = (m) => '<code class="muted" style="font-size:11px">' + esc(m.id) + '</code> '
+    + '<span class="mono">' + esc(onDay(m.ts) + at(m.ts)) + '</span>'
     + '<span class="muted"> ' + esc(ago(m.ts)) + '</span>  ' + who(m.from)
     + '<span class="muted"> → ' + esc(m.to) + '</span>' + (m.urgent ? ' ' + pill('vulnerable', 'urgent') : '')
-    + (m.replyTo ? '<div class="reply">re: ' + esc(m.replyTo) + '</div>' : '')
-    + '<div class="ink2" style="margin-top:2px">' + esc(m.text) + '</div>');
+    + (m.replyTo ? ' <span class="replyto">↳ re ' + esc(m.replyTo) + '</span>' : '')
+    + '<div class="ink2" style="margin-top:2px">' + esc(m.text) + '</div>';
+
+  // Threads: a reply nests under its ultimate in-view ancestor; threads sort by
+  // their latest message so an active discussion stays near the top.
+  const lastMsgs = (s.messages || []).slice(-40);
+  const byId = new Map(lastMsgs.map((m) => [m.id, m]));
+  const rootOf = (m, seen) => {
+    seen = seen || new Set();
+    if (!m.replyTo || seen.has(m.id)) return m;
+    const parent = byId.get(m.replyTo);
+    if (!parent) return m;
+    seen.add(m.id);
+    return rootOf(parent, seen);
+  };
+  const threads = new Map();
+  for (const m of lastMsgs) {
+    const root = rootOf(m);
+    if (!threads.has(root.id)) threads.set(root.id, { root, replies: [] });
+    if (m !== root) threads.get(root.id).replies.push(m);
+  }
+  const latestOf = (th) => (th.replies.length ? th.replies[th.replies.length - 1] : th.root).ts || '';
+  const threadList = [...threads.values()].sort((a, b) => {
+    const la = latestOf(a), lb = latestOf(b);
+    return lb > la ? 1 : lb < la ? -1 : 0;
+  });
+  el('messages').innerHTML = threadList.length
+    ? threadList.map((th) =>
+        '<div class="thread"><div class="row">' + msgRow(th.root) + '</div>'
+        + th.replies.map((r) => '<div class="row">' + msgRow(r) + '</div>').join('')
+        + '</div>').join('')
+    : '<div class="empty">nothing yet</div>';
+}
+let lastGood = null;
+function goStale(why) {
+  document.body.classList.add('offline');
+  el('when').textContent = 'stale';
+  el('offline').innerHTML = '<div class="alert warn"><b>' + esc(why) + '</b><br>'
+    + 'Everything below is frozen from '
+    + (lastGood ? 'the last update at ' + at(lastGood) + ' UTC−3' : 'an earlier page load')
+    + ' and is probably out of date. On the relay machine, run:<br>'
+    + '<code>node bin/claude-bros.js serve --token <your token></code></div>';
 }
 tick();
 setInterval(tick, 3000);
