@@ -14,5 +14,8 @@
     "test": "node test/smoke.js"
   },
   "license": "MIT",
-  "private": true
+  "private": true,
+  "optionalDependencies": {
+    "pg": "^8.13.0"
+  }
 }

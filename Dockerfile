@@ -5,7 +5,8 @@ WORKDIR /app
 
 # Install deps first (cached layer)
 COPY package*.json ./
-RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+# --include=optional so the pg driver is present when DATABASE_URL is set
+RUN npm ci --omit=dev --include=optional 2>/dev/null || npm install --omit=dev --include=optional
 
 # Copy source
 COPY bin/ ./bin/

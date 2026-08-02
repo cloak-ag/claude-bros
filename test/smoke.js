@@ -416,6 +416,48 @@ room.state.agents.alpha.hosts = ['relay-host'];
 room.state.agents.zulu.hosts = ['relay-host'];
 check('clearing the extra host clears the warning', !(await call('alpha', 'board')).text.includes('WARNING'));
 
+console.log('\n  persistence layer');
+// A fake persistence layer stands in for Postgres: the contract is load/save,
+// and these are the bugs that made the real one unusable.
+{
+  const saved = [];
+  let failNext = false;
+  const fake = {
+    load: async () => ({ room: 'p', messages: [{ id: 'M1', seq: 1, from: 'a', to: 'all', text: 'from the db', ts: new Date().toISOString(), readBy: {} }], counters: { message: 1, seq: 1 } }),
+    save: async (name, state) => { if (failNext) throw new Error('connection reset'); saved.push(state.messages.length); },
+  };
+  const r = await new Room({ name: 'p', file: null, persistence: fake }).init();
+  check('state loads from the persistence layer', r.state.messages[0]?.text === 'from the db');
+  check('an in-memory room with no file does not error on init',
+    (await new Room({ name: 'mem', file: null }).init()).state.messages.length === 0);
+
+  r.send('a', { to: 'all', text: 'one' });
+  r.send('a', { to: 'all', text: 'two' });
+  check('writes are debounced, not one per mutation', saved.length === 0);
+  await r.flush();
+  check('flush writes immediately', saved.length === 1);
+
+  failNext = true;
+  r.send('a', { to: 'all', text: 'three' });
+  let crashed = false;
+  process.once('unhandledRejection', () => { crashed = true; });
+  await r.flush();
+  await new Promise((res) => setImmediate(res));
+  check('a failing write is caught, not an unhandled rejection', !crashed);
+}
+
+// getPool() is async; a caller that forgets to await it used to poison every query
+{
+  const db = await import('../server/db.js');
+  const fakePool = { query: async () => ({ rows: [{ state: { room: 'q', messages: [] } }] }) };
+  const asPromise = Promise.resolve(fakePool);
+  const loaded = await db.loadState('q', asPromise);
+  check('db helpers accept a promised pool, not just a resolved one', loaded?.room === 'q');
+  let msg = '';
+  try { await db.getPool(undefined); } catch (e) { msg = e.message; }
+  check('a missing DATABASE_URL says so plainly', msg.includes('DATABASE_URL is not set'), msg);
+}
+
 console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
 const pageText = await page.text();
