@@ -20,9 +20,10 @@ const nowIso = () => new Date().toISOString();
  * respect to the others, which is what makes task claiming safe.
  */
 export class Room {
-  constructor({ name, file }) {
+  constructor({ name, file, persistence = null }) {
     this.name = name;
     this.file = file;
+    this.persistence = persistence;
     this.waiters = [];
     this.saveTimer = null;
     this.state = {
@@ -40,26 +41,58 @@ export class Room {
       aliases: {},
       counters: { message: 0, task: 0, finding: 0, goal: 0, seq: 0 },
     };
-    this.#load();
+    // Synchronous load for file-based or pure in-memory (used by tests);
+    // async init() for PostgreSQL
+    if (!persistence) {
+      this.#loadSync();
+    }
   }
 
-  #load() {
-    if (!this.file || !fs.existsSync(this.file)) return;
+  #loadSync() {
+    // Pure in-memory (file is null/undefined) - just initialize empty state
+    if (!this.file) return;
+    if (!fs.existsSync(this.file)) return;
     try {
       const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      // Counters must MERGE, not replace. A file written before a counter
-      // existed leaves it undefined, and `undefined + 1` is NaN — which then
-      // mints ids like "GNaN" that nothing can ever reference.
       this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
       this.#repairIds();
-      // Nobody is online across a restart until they check in again.
       for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
     } catch (err) {
       console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
     }
   }
 
+  async init() {
+    // If persistence layer provided (PostgreSQL), use it
+    if (this.persistence?.load) {
+      const state = await this.persistence.load(this.name);
+      if (state) {
+        this.state = { ...this.state, ...state, counters: { ...this.state.counters, ...(state.counters || {}) } };
+        this.#repairIds();
+        for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+        return this;
+      }
+    }
+    // Fallback to file-based (if file wasn't loaded in constructor)
+    if (this.file && !fs.existsSync(this.file)) return this;
+    try {
+      const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
+      this.#repairIds();
+      for (const agent of Object.values(this.state.agents)) agent.lastSeen = 0;
+    } catch (err) {
+      console.error(`[bros] could not read ${this.file}, starting fresh:`, err.message);
+    }
+    return this;
+  }
+
   save() {
+    // If persistence layer provided (PostgreSQL), use it
+    if (this.persistence?.save) {
+      this.persistence.save(this.name, this.state);
+      return;
+    }
+    // Fallback to file-based
     if (!this.file || this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { Room } from '../server/room.js';
 import { createServer } from '../server/http.js';
+import { getPool, ensureSchema, loadState, saveState, closePool } from '../server/db.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -71,7 +72,7 @@ function tailscaleAddress() {
 
 // --------------------------------------------------------------------- serve
 
-function serve(flags) {
+async function serve(flags) {
   // Cloud Run injects PORT, we also support BROS_PORT for local override
   const port = Number(flags.port || process.env.PORT || process.env.BROS_PORT || 7777);
   const host = flags.host || '0.0.0.0';
@@ -89,7 +90,21 @@ function serve(flags) {
     token = crypto.randomBytes(6).toString('hex');
   }
 
-  const room = new Room({ name, file: dataFile });
+  // PostgreSQL persistence when DATABASE_URL is set (Cloud Run)
+  let persistence = null;
+  let stateSource = dataFile;
+  if (process.env.DATABASE_URL) {
+    const pool = getPool();
+    // Ensure schema exists before Room loads
+    await ensureSchema(pool).catch(err => console.error('[bros] schema init failed:', err.message));
+    persistence = {
+      load: (roomName) => loadState(roomName, pool),
+      save: (roomName, state) => saveState(roomName, state, pool),
+    };
+    stateSource = `PostgreSQL (${process.env.DATABASE_URL.replace(/:[^:@]+@/, ':****@')})`;
+  }
+
+  const room = await new Room({ name, file: dataFile, persistence }).init();
   const server = createServer({ room, token });
 
   server.listen(port, host, () => {
@@ -103,7 +118,7 @@ function serve(flags) {
     room.save();
 
     console.log(`\n  ${c.v('claude-bros')} relay up — room ${c.b(name)}`);
-    console.log(`  ${c.dim(`state: ${dataFile}`)}\n`);
+    console.log(`  ${c.dim(`state: ${stateSource}`)}\n`);
     console.log(`  ${c.b('Dashboard (LAN)')}  http://${lan}:${port}/${token ? `?token=${token}` : ''}`);
     if (ts) console.log(`  ${c.b('Dashboard (Tailscale)')}  http://${ts}:${port}/${token ? `?token=${token}` : ''} ${c.g('← works across networks')}`);
     if (ips.length > 1) console.log(`  ${c.dim(`other LAN interfaces: ${ips.slice(1).join(', ')}`)}`);
@@ -386,7 +401,7 @@ const { flags, positional } = parseArgs(rest);
 
 switch (command) {
   case 'serve':
-    serve(flags);
+    await serve(flags);
     break;
   case 'join':
     await join(positional, flags);
