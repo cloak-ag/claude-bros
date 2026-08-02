@@ -46,6 +46,23 @@ ${NAV_CSS}
   .muted { color:var(--muted); font-size:12px; }
   .ink2 { color:var(--ink-2); }
 
+  /* Environment entries are long operational facts, not inline labels. Give
+     keys a stable column and values their own wrapping block so paths, commits,
+     and evidence never run into the key or stretch the dashboard. */
+  .env-list { display:grid; margin:0; }
+  .env-row { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr);
+             gap:18px; align-items:start; padding:10px 0; border-bottom:1px solid var(--line); }
+  .env-row:first-child { padding-top:2px; }
+  .env-row:last-child { padding-bottom:0; border-bottom:0; }
+  .env-key { min-width:0; color:var(--muted); font:600 12px/1.45 var(--mono);
+             overflow-wrap:anywhere; }
+  .env-value { min-width:0; color:var(--ink-2); font-size:13px; line-height:1.5;
+               white-space:pre-wrap; overflow-wrap:anywhere; }
+  @media (max-width:640px) {
+    .env-row { grid-template-columns:1fr; gap:3px; padding:11px 0; }
+    .env-key { color:var(--ink); }
+  }
+
   /* agent identity: colour ALWAYS beside the name, never alone */
   .who { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-weight:600; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 2px var(--surface); }
@@ -172,7 +189,7 @@ ${NAV_CSS}
 <div class="wrap">
   <div class="stats" id="stats"></div>
 
-  <section><h2>Shared environment</h2><div class="envgrid" id="env"></div></section>
+  <section><h2>Shared environment</h2><div class="env-list" id="env"></div></section>
 
   <div class="grid">
     <section><h2>Goals</h2><div class="pane" id="goals"></div></section>
@@ -371,8 +388,8 @@ async function tick() {
 
   const env = Object.entries(s.env || {});
   el('env').innerHTML = env.length
-    ? '<div class="envgrid">' + env.map(([k, v]) =>
-        '<div><b>' + esc(k) + '</b><span>' + esc(v.value) + '</span></div>').join('') + '</div>'
+    ? env.map(([k, v]) => '<div class="env-row"><div class="env-key">' + esc(k)
+        + '</div><div class="env-value">' + esc(v.value) + '</div></div>').join('')
     : '<div class="empty">Not recorded. Agents should pin repo, commit and build with '
       + '<code>env_set</code> — otherwise they may be auditing different code.</div>';
 

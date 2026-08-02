@@ -645,6 +645,10 @@ check('dashboard separates active and archived work', pageText.includes('Active 
 check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));
 check('dashboard distinguishes MCP client implementation from agent role',
   pageText.includes('Client: ') && pageText.includes('a.client.title || a.client.name'));
+check('shared environment uses separated responsive key/value rows',
+  pageText.includes('class="env-row"')
+    && pageText.includes('grid-template-columns:minmax(140px,220px) minmax(0,1fr)')
+    && !pageText.includes('<div class="envgrid">'));
 check('coverage is a searchable full-width ledger', pageText.includes('coverage-filter') && pageText.includes('data-coverage-row'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 // Regression for the dashboard rewrite: esc() must actually escape (agent text is
