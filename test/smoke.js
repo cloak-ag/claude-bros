@@ -587,6 +587,24 @@ const runCli = (args, envHome, cwd) => new Promise((resolve) => {
   child.on('close', (code) => resolve({ code, out, err }));
 });
 
+{
+  const secret = 'do-not-write-this-token-to-service-logs';
+  const hiddenDir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-hidden-token-'));
+  const hidden = await new Promise((resolve) => {
+    const child = spawn('node', [cli, 'serve', '--port', '0', '--data', pathMod.join(hiddenDir, 'state.json')], {
+      env: { ...process.env, BROS_TOKEN: secret, BROS_HIDE_TOKEN: 'true' }, cwd: hiddenDir,
+    });
+    let output = '';
+    child.stdout.on('data', (d) => { output += d; });
+    child.stderr.on('data', (d) => { output += d; });
+    setTimeout(() => child.kill('SIGTERM'), 400);
+    child.on('close', () => resolve(output));
+  });
+  check('serve can redact its bearer token from service logs',
+    !hidden.includes(secret) && hidden.includes('<token>'), hidden);
+  fsMod.rmSync(hiddenDir, { recursive: true, force: true });
+}
+
 // The join CLI installs hooks into `.claude/settings.local.json` — sandbox the
 // cwd so the test never touches a real repo's settings file.
 const sandbox = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-cli-'));

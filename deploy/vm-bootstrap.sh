@@ -69,6 +69,7 @@ Group=claude-bros
 WorkingDirectory=$APP
 EnvironmentFile=$CONFIG_DIR/env
 Environment=BROS_ROOM=$ROOM
+Environment=BROS_HIDE_TOKEN=true
 ExecStart=/usr/bin/node $APP/bin/claude-bros.js serve --host 127.0.0.1 --room $ROOM --data $STATE_DIR/$ROOM.json
 Restart=always
 RestartSec=3

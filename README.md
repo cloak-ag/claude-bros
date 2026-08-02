@@ -190,7 +190,7 @@ The deploy reserves a stable external IP and uses its `sslip.io` hostname for
 TLS, so no domain setup is required. State lives outside the checkout at
 `/var/lib/claude-bros/<room>.json` with owner-only permissions, and the relay
 token is kept in a root-only file and synchronized to GCP Secret Manager as
-`bros-token`.
+`bros-token`. `BROS_HIDE_TOKEN=true` keeps it out of systemd logs.
 
 Deployments from GitHub use Workload Identity Federation—there is no JSON
 service-account key to create or store in repository secrets. The workflow

@@ -90,6 +90,8 @@ async function serve(flags) {
   } else {
     token = crypto.randomBytes(6).toString('hex');
   }
+  const hideToken = Boolean(flags['hide-token']) || /^(1|true|yes)$/i.test(process.env.BROS_HIDE_TOKEN || '');
+  const shownToken = hideToken ? '<token>' : token;
 
   // PostgreSQL persistence when DATABASE_URL is set (Cloud Run)
   let persistence = null;
@@ -120,23 +122,22 @@ async function serve(flags) {
     const ips = lanAddresses();
     const lan = ips[0] || '127.0.0.1';
     const ts = tailscaleAddress();
-    const auth = token ? `&token=${token}` : '';
-
     // Post a system note so running agents learn about updates without restart
     room.note('system', 'RELAY_UPDATED: new tools available — use /api/tool/<name> now, re-join on next restart');
     room.save();
 
     console.log(`\n  ${c.v('claude-bros')} relay up — room ${c.b(name)}`);
     console.log(`  ${c.dim(`state: ${stateSource}`)}\n`);
-    console.log(`  ${c.b('Dashboard (LAN)')}  http://${lan}:${port}/${token ? `?token=${token}` : ''}`);
-    if (ts) console.log(`  ${c.b('Dashboard (Tailscale)')}  http://${ts}:${port}/${token ? `?token=${token}` : ''} ${c.g('← works across networks')}`);
+    console.log(`  ${c.b('Dashboard (LAN)')}  http://${lan}:${port}/${token ? `?token=${shownToken}` : ''}`);
+    if (ts) console.log(`  ${c.b('Dashboard (Tailscale)')}  http://${ts}:${port}/${token ? `?token=${shownToken}` : ''} ${c.g('← works across networks')}`);
     if (ips.length > 1) console.log(`  ${c.dim(`other LAN interfaces: ${ips.slice(1).join(', ')}`)}`);
     console.log(`\n  ${c.b('On THIS machine')} ${c.dim('— run inside the repo you are working in:')}\n`);
     const primary = ts || lan;
-    console.log(`    ${c.g(`node ${path.join(ROOT, 'bin', 'claude-bros.js')} join http://${primary}:${port} --as <your-name>${token ? ` --token ${token}` : ''}`)}`);
+    console.log(`    ${c.g(`node ${path.join(ROOT, 'bin', 'claude-bros.js')} join http://${primary}:${port} --as <your-name>${token ? ` --token ${shownToken}` : ''}`)}`);
     console.log(`\n  ${c.b('On the OTHER machine')} ${c.dim('— no git needed, it pulls the code from here:')}\n`);
-    console.log(`    ${c.g(`mkdir -p ~/claude-bros && curl -fsSL "http://${primary}:${port}/bundle.tgz${token ? `?token=${token}` : ''}" | tar xz -C ~/claude-bros`)}`);
-    console.log(`    ${c.g(`node ~/claude-bros/bin/claude-bros.js join http://${primary}:${port} --as <partner-name>${token ? ` --token ${token}` : ''}`)}`);
+    console.log(`    ${c.g(`mkdir -p ~/claude-bros && curl -fsSL "http://${primary}:${port}/bundle.tgz${token ? `?token=${shownToken}` : ''}" | tar xz -C ~/claude-bros`)}`);
+    console.log(`    ${c.g(`node ~/claude-bros/bin/claude-bros.js join http://${primary}:${port} --as <partner-name>${token ? ` --token ${shownToken}` : ''}`)}`);
+    if (token && hideToken) console.log(`\n  ${c.dim('Token hidden from logs; retrieve it from the configured secret store.')}`);
     if (ts && !flags['no-tailscale-note']) {
       console.log(`\n  ${c.g('Tip:')} Tailscale detected — the Tailscale URL works from anywhere your tailnet reaches. No LAN required.`);
     }
@@ -442,6 +443,7 @@ switch (command) {
     --room NAME                    Room name (default "bounty", file: data/bounty.json)
     --host HOST                    Bind address (default 0.0.0.0)
     --no-token                     Disable token auth (LAN only!)
+    --hide-token                   Redact the token from startup logs
     --no-tailscale-note            Don't show Tailscale tip even if detected
   join <http://host:port> --as <name> [--token T] [--role "..."] [--scope "..."]
   rename <current> <new>           Rename agent on board + this machine's MCP config
