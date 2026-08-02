@@ -4,6 +4,8 @@
  * written to push toward "check before you work, announce after you find".
  */
 
+import { relatedTo } from './graph.js';
+
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 
 export const TOOL_DEFS = [
@@ -230,6 +232,20 @@ export const TOOL_DEFS = [
     title: 'List all findings',
     description: 'Read every finding both agents have logged, with status and evidence.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'related',
+    title: 'What else touches this?',
+    description:
+      'Traverse the shared brain around one thing — a file path, a finding id (F3), a task id (T7), a goal (G1) or an agent name. Returns everything connected to it and how: who reviewed that file, which findings name it, which tasks serve the same goal. Call this BEFORE opening a file or picking up a finding: it is the fastest way to inherit the context your partners already built instead of rediscovering it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('What to look up: "votor/src/consensus_pool.rs", "F3", "T7", "G1", or an agent name.'),
+        hops: { type: 'number', description: 'How far to walk: 1 = direct connections (default), 2 = the second ring, which is where non-obvious links show up.' },
+      },
+      required: ['id'],
+    },
   },
   {
     name: 'digest',
@@ -712,6 +728,28 @@ export async function callTool(room, agent, name, args = {}, host = null) {
 
     case 'findings':
       return text(room.state.findings.length ? room.state.findings : 'No findings logged yet.');
+
+    case 'related': {
+      if (!args.id) return fail('related requires "id" — a file path, finding id, task id, goal id or agent name.');
+      const hops = Math.min(Math.max(Number(args.hops) || 1, 1), 3);
+      const found = relatedTo(room.state, args.id, hops);
+      if (!found) return fail(`Nothing on the board matches "${args.id}". Try a file path, F/T/G id, or an agent name.`);
+      if (!found.neighbours.length) {
+        return text(`${found.start.type} ${found.start.label} — ${found.start.detail}\n\nNothing is connected to it yet. If you are working on it, that is worth fixing: claim a task, or record a file_review so your partners can see it.`);
+      }
+      const lines = [`${found.start.type} ${found.start.label} — ${found.start.detail}`, ''];
+      for (let d = 1; d <= hops; d += 1) {
+        const ring = found.neighbours.filter((n) => n.depth === d);
+        if (!ring.length) continue;
+        lines.push(`## ${d === 1 ? 'Directly connected' : `${d} hops away`} (${ring.length})`);
+        for (const n of ring) {
+          const how = found.edges.find((e) => e.from === n.id || e.to === n.id);
+          lines.push(`  ${n.type.padEnd(8)} ${n.label}${n.detail && n.detail !== n.label ? ` — ${n.detail.slice(0, 70)}` : ''}${how ? `  [${how.kind}]` : ''}`);
+        }
+        lines.push('');
+      }
+      return text(lines.join('\n'));
+    }
 
     case 'digest': {
       room.maybeDigest();

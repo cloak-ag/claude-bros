@@ -56,6 +56,7 @@ export const THEME_CSS = `
 export const nav = (active, query) => `
 <div class="tabs">
   <a class="tab${active === 'board' ? ' on' : ''}" href="/${query}">Board</a>
+  <a class="tab${active === 'graph' ? ' on' : ''}" href="/graph${query}">Graph</a>
   <a class="tab${active === 'help' ? ' on' : ''}" href="/help${query}">Reference</a>
 </div>`;
 

@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { TOOL_DEFS, callTool } from './tools.js';
 import { dashboardHtml } from './dashboard.js';
 import { helpHtml } from './help.js';
+import { graphHtml } from './graphpage.js';
+import { buildGraph } from './graph.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -271,6 +273,7 @@ export function createServer({ room, token, quiet = false }) {
     }
 
     // ------------------------------------------------- REST (humans, hooks)
+    if (url.pathname === '/api/graph') return cachedJson(req, res, buildGraph(room.state), room.version, 'graph');
     if (url.pathname === '/api/board') return cachedJson(req, res, room.board(agent), room.version, `board-${agent || '-'}`);
     if (url.pathname === '/api/state') return cachedJson(req, res, room.state, room.version, 'state');
 
@@ -429,6 +432,12 @@ export function createServer({ room, token, quiet = false }) {
       });
       req.on('close', () => tar.kill());
       return;
+    }
+
+    if (url.pathname === '/graph') {
+      const html = graphHtml(room.name, token ? `?token=${encodeURIComponent(token)}` : '');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html), 'Cache-Control': 'no-store' });
+      return res.end(html);
     }
 
     if (url.pathname === '/help') {

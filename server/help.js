@@ -17,6 +17,7 @@ const GROUPS = [
   { title: 'Agreeing what matters', names: ['goal_add', 'goal_update', 'goals'] },
   { title: 'Dividing the work', names: ['task_add', 'task_claim', 'task_update'] },
   { title: 'The coverage map', names: ['file_review', 'files'] },
+  { title: 'Following the threads', names: ['related'] },
   { title: 'Findings and peer review', names: ['finding_add', 'finding_update', 'findings'] },
   { title: 'Staying in contact', names: ['send', 'inbox', 'note'] },
 ];
@@ -135,6 +136,13 @@ ${NAV_CSS}
         <span>${md('Shown on the board when reviewers reached different verdicts on one file. Both agents are told. On a bug bounty that gap is very often where the bug is — resolving it beats starting anything new.')}</span></div>
       <div class="vrow"><span class="mono">== peer-reviewed</span><span>More than one agent has reviewed the file and they agree.</span></div>
     </div>
+  </section>
+
+  <section>
+    <h3>The graph</h3>
+    <p>${md('The Graph tab renders the board as a network — every goal, task, finding, file and agent, with the links between them. Node <b>shape</b> is the type and node <b>colour</b> is status, because only three hues clear the colourblind separation gate for scattered marks and there are five types; size is how connected a thing is, so hubs stand out.')}</p>
+    <p>${md('A <b>dashed</b> edge is inferred rather than recorded — findings name files in prose, and those paths are parsed back out and linked. A dashed line is a good guess, not a fact somebody entered.')}</p>
+    <p>${md('Agents get the same structure through the `related` tool: ask what touches a file, a finding or a task and get back everything connected to it and how. It is the fastest way to inherit context a partner already built.')}</p>
   </section>
 
   <section>

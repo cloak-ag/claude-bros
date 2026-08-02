@@ -50,7 +50,7 @@ check('initialize returns a protocol version', init.result?.protocolVersion === 
 check('server identifies itself', init.result?.serverInfo?.name === 'claude-bros');
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 19, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 20, `got ${tools.result.tools.length}`);
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
 
 console.log('\n  auth');
@@ -487,6 +487,46 @@ console.log('\n  egress: compression and revalidation');
   const afterChange = await fetch(url, { headers: { 'If-None-Match': tag } });
   check('a changed board returns 200 with fresh content', afterChange.status === 200);
   check('the ETag moves when the board changes', afterChange.headers.get('etag') !== tag);
+}
+
+console.log('\n  shared-brain graph');
+{
+  const { buildGraph, relatedTo } = await import('../server/graph.js');
+  const g = buildGraph(room.state);
+  check('the graph has a node per entity',
+    g.nodes.some((n) => n.type === 'agent') && g.nodes.some((n) => n.type === 'task')
+    && g.nodes.some((n) => n.type === 'finding') && g.nodes.some((n) => n.type === 'file'));
+  check('tasks link to the goal they serve', g.edges.some((e) => e.kind === 'serves'));
+  check('agents link to work they own', g.edges.some((e) => e.kind === 'owns'));
+  check('reviewers link to the files they read', g.edges.some((e) => e.kind === 'reviewed'));
+  check('every edge points at a node that exists', (() => {
+    const ids = new Set(g.nodes.map((n) => n.id));
+    return g.edges.every((e) => ids.has(e.from) && ids.has(e.to));
+  })());
+  check('degree is computed for sizing', g.nodes.every((n) => Number.isFinite(n.degree)));
+
+  // finding_add auto-links only the FIRST path in `target`. A second file named
+  // in the prose is exactly what inference is for.
+  await call('alpha', 'file_review', { path: 'votor/src/prose_target.rs', verdict: 'clean', note: 'read it' });
+  await call('alpha', 'file_review', { path: 'votor/src/second_file.rs', verdict: 'clean', note: 'read it too' });
+  await call('alpha', 'finding_add', {
+    title: 'Prose-located bug', target: 'votor/src/prose_target.rs:120',
+    evidence: 'the guard is skipped when votor/src/second_file.rs warms the cache first',
+  });
+  const g2 = buildGraph(room.state);
+  const explicit = g2.edges.find((e) => e.kind === 'found_in' && e.to === 'file:votor/src/prose_target.rs');
+  const inferred = g2.edges.find((e) => e.kind === 'found_in' && e.to === 'file:votor/src/second_file.rs');
+  check('the target file is linked', Boolean(explicit));
+  check('a file named only in the evidence prose is also linked', Boolean(inferred),
+    JSON.stringify(g2.edges.filter((e) => e.kind === 'found_in').map((e) => e.to)));
+  check('the recorded link is not marked inferred', explicit?.inferred === false);
+  check('the guessed link IS marked inferred, never passed off as recorded', inferred?.inferred === true);
+
+  const rel = await call('alpha', 'related', { id: 'votor/src/prose_target.rs' });
+  check('the related tool walks the graph', rel.text.includes('Directly connected'), rel.text.slice(0, 120));
+  check('it reports how things connect', /\[(reviewed|found_in|owns|serves|reported)\]/.test(rel.text));
+  check('an unknown id fails usefully', (await call('alpha', 'related', { id: 'nope-nope' })).isError);
+  check('related accepts a finding id too', !(await call('alpha', 'related', { id: 'F1' })).isError);
 }
 
 console.log('\n  dashboard');
