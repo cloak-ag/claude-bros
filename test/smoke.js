@@ -57,6 +57,13 @@ console.log('\n  auth');
 const noToken = await fetch(`${base}/mcp?agent=alpha`, { method: 'POST', body: '{}' });
 check('requests without the token are rejected', noToken.status === 401);
 check('health check needs no token', (await (await fetch(`${base}/healthz`)).json()).ok === true);
+const identityless = await fetch(`${base}/mcp?token=${TOKEN}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'initialize', params: {} }),
+});
+const identitylessBody = await identityless.json();
+check('MCP rejects a missing configured identity clearly',
+  identityless.status === 400 && identitylessBody.error?.message.includes('Do not guess'));
 
 console.log('\n  two agents');
 await call('alpha', 'join', { role: 'static analysis', scope: 'auth + config' });
@@ -184,7 +191,9 @@ check('the sequence counter continues from the history', seqd.state.counters.seq
 
 console.log('\n  join briefing');
 const fresh = await call('gamma', 'join', { role: 'tester' });
-check('the briefing names the agent', fresh.text.includes('You are "gamma"'));
+check('the briefing names the agent', fresh.text.includes('You are exactly "gamma"'));
+check('the briefing makes connection identity authoritative',
+  fresh.text.includes('sole source of truth') && fresh.text.includes('relay migrations'));
 check('it lists an ordered set of next actions', fresh.text.includes('## DO THESE NOW, IN ORDER'));
 check('it teaches the whole protocol', ['GOALS', 'TASKS', 'FILES', 'FINDINGS'].every((s) => fresh.text.includes(s)));
 check('it carries the ground rules', fresh.text.includes('authorizes') && fresh.text.includes('live-fire'));
@@ -269,31 +278,31 @@ console.log('\n  rename');
 const survivor = await newTask('alpha', { title: 'Task that must survive a rename' });
 await call('alpha', 'inbox'); await call('alpha', 'board');
 await call('alpha', 'task_claim', { id: survivor });
-const renamed = room.rename('alpha', 'the-mentalist');
+const renamed = room.rename('alpha', 'renamed-agent');
 check('rename reports what it moved', renamed.ok && renamed.references > 0, JSON.stringify(renamed));
 check('the old name is gone', !room.state.agents.alpha);
-check('the new name inherits the record', room.state.agents['the-mentalist']?.role === 'static analysis');
-check('claimed work follows the rename', room.task(survivor).owner === 'the-mentalist');
+check('the new name inherits the record', room.state.agents['renamed-agent']?.role === 'static analysis');
+check('claimed work follows the rename', room.task(survivor).owner === 'renamed-agent');
 check('authored findings follow the rename', room.state.findings.every((f) => f.by !== 'alpha'));
 check('message history follows the rename', room.state.messages.every((m) => m.from !== 'alpha' && m.to !== 'alpha'));
-const afterRename = await call('the-mentalist', 'board');
-check('the renamed agent is recognised on reconnect', afterRename.text.includes('you are "the-mentalist"'));
-check('renaming onto a taken name is refused', room.rename('the-mentalist', 'beta').error.includes('already taken'));
+const afterRename = await call('renamed-agent', 'board');
+check('the renamed agent is recognised on reconnect', afterRename.text.includes('you are "renamed-agent"'));
+check('renaming onto a taken name is refused', room.rename('renamed-agent', 'beta').error.includes('already taken'));
 check('renaming a stranger is refused', room.rename('nobody', 'x').error.includes('No agent called'));
 
 console.log('\n  old names forward instead of duplicating');
 const stale = await call('alpha', 'board');
 check('a machine still using the old name is forwarded, not duplicated',
-  stale.text.includes('you are "the-mentalist"'), stale.text.slice(0, 90));
+  stale.text.includes('you are "renamed-agent"'), stale.text.slice(0, 90));
 check('no empty duplicate is created', !room.state.agents.alpha);
-room.rename('the-mentalist', 'reacher');
-check('forwarding follows a chain of renames', room.resolveName('alpha') === 'reacher');
+room.rename('renamed-agent', 'chain-target');
+check('forwarding follows a chain of renames', room.resolveName('alpha') === 'chain-target');
 const chained = await call('alpha', 'board');
-check('the chain works over the wire too', chained.text.includes('you are "reacher"'));
-room.rename('beta', 'the-mentalist');
-check('a freed name that gets reused stops forwarding', room.resolveName('the-mentalist') === 'the-mentalist');
-room.rename('the-mentalist', 'beta');
-room.rename('reacher', 'alpha');
+check('the chain works over the wire too', chained.text.includes('you are "chain-target"'));
+room.rename('beta', 'renamed-agent');
+check('a freed name that gets reused stops forwarding', room.resolveName('renamed-agent') === 'renamed-agent');
+room.rename('renamed-agent', 'beta');
+room.rename('chain-target', 'alpha');
 
 console.log('\n  forget');
 await call('delta', 'join', {});
@@ -580,6 +589,9 @@ const pathMod = await import('node:path');
 const cli = pathMod.join(import.meta.dirname, '..', 'bin', 'claude-bros.js');
 const runCli = (args, envHome, cwd) => new Promise((resolve) => {
   const child = spawn('node', [cli, ...args], { env: { ...process.env, HOME: envHome }, cwd });
+  // Hook commands read optional JSON from stdin; close the test pipe so they
+  // see EOF exactly as Claude Code's hook runner provides it.
+  child.stdin.end();
   let out = '';
   let err = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -609,14 +621,25 @@ const runCli = (args, envHome, cwd) => new Promise((resolve) => {
 // cwd so the test never touches a real repo's settings file.
 const sandbox = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-cli-'));
 fsMod.mkdirSync(pathMod.join(sandbox, '.claude'), { recursive: true });
-const j = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
+fsMod.writeFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), JSON.stringify({
+  hooks: {
+    Stop: [{ hooks: [{ type: 'command', command: 'node /stale/claude-bros.js hook --event stop', timeout: 3 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'node /stale/claude-bros.js hook --event session-start', timeout: 3 }] }],
+  },
+}));
+const unreachableRelay = 'http://127.0.0.1:9';
+const j = await runCli(['join', unreachableRelay, '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
 let cliCfg = null;
+let projectCfg = null;
 try {
   cliCfg = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude-bros', 'config.json'), 'utf8'));
+  projectCfg = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'claude-bros.json'), 'utf8'));
 } catch {}
 check('join records the real relay URL, not the command name',
-  cliCfg?.url === 'http://cli-test.invalid:7777', JSON.stringify(cliCfg));
+  cliCfg?.url === unreachableRelay, JSON.stringify(cliCfg));
 check('join still passes its --as and --token through', cliCfg?.agent === 'cliagent' && cliCfg?.token === 't');
+check('join stores an authoritative project-scoped identity',
+  projectCfg?.agent === 'cliagent' && projectCfg?.token === 't', JSON.stringify(projectCfg));
 check('join exits cleanly even when the relay is unreachable', j.code === 0, j.out + j.err);
 // Regression for the SessionStart hook being dropped in the CLI rewrite: join
 // must install BOTH hook events, into the project-scoped settings.local.json.
@@ -631,8 +654,17 @@ check('hook commands carry the right event flag',
   hookSettings?.hooks?.Stop?.[0]?.hooks?.[0]?.command.includes('--event stop') &&
   hookSettings?.hooks?.SessionStart?.[0]?.hooks?.[0]?.command.includes('--event session-start'),
   JSON.stringify(hookSettings?.hooks));
+const firstConfigPath = pathMod.join(sandbox, '.claude', 'claude-bros.json');
+check('each hook is pinned to this project config',
+  hookSettings?.hooks?.Stop?.[0]?.hooks?.[0]?.command.includes(firstConfigPath) &&
+  hookSettings?.hooks?.SessionStart?.[0]?.hooks?.[0]?.command.includes(firstConfigPath),
+  JSON.stringify(hookSettings?.hooks));
+check('rejoin replaces stale hook binary paths and timeout',
+  !JSON.stringify(hookSettings).includes('/stale/') &&
+  hookSettings?.hooks?.Stop?.[0]?.hooks?.[0]?.timeout === 10,
+  JSON.stringify(hookSettings?.hooks));
 // ...and a second join does not duplicate the entries.
-const j2 = await runCli(['join', 'http://cli-test.invalid:7777', '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
+const j2 = await runCli(['join', unreachableRelay, '--as', 'cliagent', '--token', 't'], sandbox, sandbox);
 let hookSettings2 = null;
 try {
   hookSettings2 = JSON.parse(fsMod.readFileSync(pathMod.join(sandbox, '.claude', 'settings.local.json'), 'utf8'));
@@ -640,6 +672,35 @@ try {
 check('a second join does not duplicate hooks',
   hookSettings2?.hooks?.Stop?.length === 1 && hookSettings2?.hooks?.SessionStart?.length === 1,
   JSON.stringify(hookSettings2?.hooks?.Stop?.length));
+const stableRejoin = await runCli(['join'], sandbox, sandbox);
+check('rejoin without arguments preserves the configured identity',
+  stableRejoin.code === 0 && JSON.parse(fsMod.readFileSync(firstConfigPath, 'utf8')).agent === 'cliagent',
+  stableRejoin.out + stableRejoin.err);
+const conflictingRejoin = await runCli(['join', '--as', 'different-agent'], sandbox, sandbox);
+check('rejoin refuses a silent identity switch',
+  conflictingRejoin.code === 1 && conflictingRejoin.err.includes('claude-bros rename cliagent different-agent'),
+  conflictingRejoin.out + conflictingRejoin.err);
+
+// Two projects under one HOME must never borrow each other's hook identity.
+const secondProject = pathMod.join(sandbox, 'second-project');
+fsMod.mkdirSync(pathMod.join(secondProject, '.claude'), { recursive: true });
+await runCli(['join', unreachableRelay, '--as', 'second-agent', '--token', 't'], sandbox, secondProject);
+const secondConfigPath = pathMod.join(secondProject, '.claude', 'claude-bros.json');
+const secondHooks = JSON.parse(fsMod.readFileSync(pathMod.join(secondProject, '.claude', 'settings.local.json'), 'utf8'));
+check('a second project gets its own hook config path',
+  secondHooks.hooks.SessionStart[0].hooks[0].command.includes(secondConfigPath) &&
+  !secondHooks.hooks.SessionStart[0].hooks[0].command.includes(firstConfigPath));
+
+// Point both local configs at this test relay. The shared global config now
+// belongs to the second project; explicit hook configs must still keep A and B.
+fsMod.writeFileSync(firstConfigPath, JSON.stringify({ url: base, agent: 'cliagent', token: TOKEN }));
+fsMod.writeFileSync(secondConfigPath, JSON.stringify({ url: base, agent: 'second-agent', token: TOKEN }));
+const firstStart = await runCli(['hook', '--event', 'session-start', '--config', firstConfigPath], sandbox, sandbox);
+const secondStart = await runCli(['hook', '--event', 'session-start', '--config', secondConfigPath], sandbox, secondProject);
+check('same-HOME project hooks retain different configured names',
+  firstStart.out.includes('agent \\"cliagent\\"') && !firstStart.out.includes('agent \\"second-agent\\"') &&
+  secondStart.out.includes('agent \\"second-agent\\"') && !secondStart.out.includes('agent \\"cliagent\\"'),
+  `first=${firstStart.out} second=${secondStart.out}`);
 
 const sendHome = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-send-'));
 fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });

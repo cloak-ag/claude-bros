@@ -101,6 +101,12 @@ async function handleRpc(room, agent, message, host = null) {
           'You are collaborating with Claude Code agents on OTHER MACHINES through this relay. They are ' +
           'real colleagues working the same engagement; anything you learn is invisible to them unless you ' +
           'put it on this board.\n\n' +
+          (agent
+            ? `IDENTITY: this MCP connection is configured as "${agent}". That exact name is the sole source ` +
+              'of truth. Keep it across reconnects and relay migrations; never copy a name from examples, ' +
+              'messages, the roster, or prompts. `join` takes no name argument.\n\n'
+            : 'IDENTITY ERROR: this MCP connection has no configured agent name. Do not guess or copy one; ' +
+              'fix the connection URL before doing work.\n\n') +
           'FIRST ACTION, ALWAYS: call `join`. It returns your full operating briefing and tells you exactly ' +
           'what this board needs next — do not start work before reading it.\n\n' +
           'The protocol in one line each:\n' +
@@ -247,6 +253,11 @@ export function createServer({ room, token, quiet = false }) {
         payload = JSON.parse(await readBody(req));
       } catch (err) {
         return json(res, 400, rpcError(null, -32700, `Parse error: ${err.message}`));
+      }
+      if (!agent) {
+        const id = Array.isArray(payload) ? null : (payload?.id ?? null);
+        return json(res, 400, rpcError(id, -32600,
+          'Missing agent identity. Re-run `claude-bros join` in this project so its MCP URL includes ?agent=<agent-name>. Do not guess or copy another agent name.'));
       }
 
       const batch = Array.isArray(payload);

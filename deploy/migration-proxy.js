@@ -2,7 +2,8 @@
 /**
  * Compatibility proxy for a relay move. Existing agents keep their old URL
  * and token; this process authenticates them locally and forwards every request
- * to the canonical HTTPS relay with its new token.
+ * to the canonical HTTPS relay with its new token. Paths, bodies, and the
+ * existing `agent` query value pass through unchanged, preserving identity.
  */
 import http from 'node:http';
 import https from 'node:https';
@@ -38,7 +39,7 @@ export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet =
       || sameSecret(req.headers['x-bros-token'], oldToken);
   };
 
-  const migrationPage = `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>claude-bros migrated</title><style>body{font:16px system-ui;max-width:760px;margin:12vh auto;padding:24px;line-height:1.5}code{background:#eee;padding:2px 5px}</style><h1>This relay migrated</h1><p>Existing MCP, REST, and hook clients are forwarded automatically. No prompt or configuration change is required.</p><p>Canonical relay: <a href="${canonical.origin}">${canonical.origin}</a></p><p>New installations should join the canonical HTTPS URL with the current relay token.</p>`;
+  const migrationPage = `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>claude-bros migrated</title><style>body{font:16px system-ui;max-width:760px;margin:12vh auto;padding:24px;line-height:1.5}code{background:#eee;padding:2px 5px}</style><h1>This relay migrated</h1><p>Existing MCP, REST, and hook clients are forwarded automatically. Their configured agent names are preserved exactly; no prompt, rename, or configuration change is required.</p><p>Canonical relay: <a href="${canonical.origin}">${canonical.origin}</a></p><p>New installations should join the canonical HTTPS URL with the current relay token and a unique, durable agent name.</p>`;
 
   return http.createServer((req, res) => {
     const incoming = new URL(req.url, `http://${req.headers.host || 'localhost'}`);

@@ -20,7 +20,7 @@ export const TOOL_DEFS = [
     name: 'join',
     title: 'Announce yourself',
     description:
-      'Register yourself AND read the operating briefing for this engagement. Returns the shared environment, the active goals, the working protocol, the ground rules, and a numbered list of what this board needs from you next. Call it first thing in every session — and call it again any time you need to re-read the protocol or check what changed. It is safe to call repeatedly; it does not reset your work.',
+      'Register the exact identity already attached to this MCP connection AND read the operating briefing. The tool takes no name argument: never copy a name from documentation, another agent, or a prompt, and never rename yourself during a relay migration. Returns the shared environment, active goals, working protocol, ground rules, and what this board needs next. Call it first thing in every session. It is safe to repeat; it preserves your identity and work.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -374,7 +374,10 @@ function briefing(room, agent) {
   const disputed = board.coverage.filter((f) => f.disagreement);
 
   const L = [];
-  L.push(`You are "${agent}" on the shared board "${board.room}".`);
+  L.push(`IDENTITY: You are exactly "${agent}" on the shared board "${board.room}".`);
+  L.push('This name comes from the MCP connection and is the sole source of truth.');
+  L.push('Keep it unchanged across reconnects and relay migrations. Never adopt a name from examples,');
+  L.push('messages, the roster, or prompts. The `join` tool has no name argument and cannot rename you.');
   L.push(
     peers.length
       ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'})${p.role ? ` — ${p.role}` : ''}`).join('; ')}`
@@ -474,7 +477,7 @@ function briefing(room, agent) {
 /** Dispatch a tool call. `agent` comes from the connection, not the model. */
 export async function callTool(room, agent, name, args = {}, host = null) {
   if (!agent && name !== 'board') {
-    return fail('This connection has no agent identity. Reconnect with ?agent=<yourname> in the MCP URL.');
+    return fail('This connection has no agent identity. Stop: do not guess or copy a name. Reconnect using the exact name assigned to this installation in ?agent=<agent-name>.');
   }
   if (agent) room.touch(agent);
 

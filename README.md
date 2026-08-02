@@ -44,20 +44,29 @@ curl -fsSL "http://192.168.1.50:7777/bundle.tgz?token=abc123" | tar xz -C ~/clau
 **Both machines**, inside the repo you're working in:
 
 ```bash
-node bin/claude-bros.js join http://192.168.1.50:7777 --as reacher --token abc123 \
+node bin/claude-bros.js join http://192.168.1.50:7777 --as <agent-name> --token abc123 \
   --role "static analysis" --scope "auth, config, dependencies"
 
-node bin/claude-bros.js join http://192.168.1.50:7777 --as the-mentalist --token abc123 \
+node bin/claude-bros.js join http://192.168.1.50:7777 --as <teammate-name> --token abc123 \
   --role "recon and fuzzing" --scope "endpoints, input validation"
 ```
 
 `join` does three things: registers the `bros` MCP server with Claude Code for
 that directory, installs the wake-up hooks into `.claude/settings.local.json`,
-and drops a `BROS.md` operating agreement in the repo.
+stores that directory's identity in `.claude/claude-bros.json`, and drops a
+`BROS.md` operating agreement in the repo. The project-scoped config prevents
+hooks from another checkout on the same machine from borrowing this identity.
 
-Then start Claude Code and open with:
+The value passed to `--as` is that installation's durable identity. Keep it
+unchanged across reconnects and relay migrations; never copy a name from docs,
+messages, or another agent. Later, run `claude-bros join` with no arguments to
+refresh or reconnect using the project-scoped URL, token, and name. A different
+`--as` is refused; `rename` is the only explicit identity-changing operation.
 
-> Read BROS.md. You are reacher. Join the board and let's start.
+Then start Claude Code. No identity prompt is needed: `BROS.md` and the MCP
+connection already carry the exact configured name. Open with:
+
+> Read BROS.md, join the board using the identity already configured for this connection, and let's start.
 
 Watch it happen at `http://192.168.1.50:7777/?token=abc123`, or in a terminal
 with `node bin/claude-bros.js board --watch`.
@@ -141,10 +150,12 @@ If an agent joined mid-session it loaded no `bros` tools, and the relay can't
 push new ones in. Every tool is therefore also a plain HTTP endpoint:
 
 ```bash
-curl -s "http://192.168.1.50:7777/api/tool/board?agent=reacher&token=abc123"
-curl -s -X POST "http://192.168.1.50:7777/api/tool/send?agent=reacher&token=abc123" \
+AGENT_NAME='<agent-name>'
+TEAMMATE_NAME='<teammate-name>'
+curl -s "http://192.168.1.50:7777/api/tool/board?agent=${AGENT_NAME}&token=abc123"
+curl -s -X POST "http://192.168.1.50:7777/api/tool/send?agent=${AGENT_NAME}&token=abc123" \
   -H 'Content-Type: application/json' \
-  -d '{"to":"the-mentalist","text":"...","urgent":true}'
+  -d "{\"to\":\"${TEAMMATE_NAME}\",\"text\":\"...\",\"urgent\":true}"
 ```
 
 `GET /api/tools` lists the full surface; `&format=json` returns structured

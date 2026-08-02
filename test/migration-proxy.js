@@ -13,6 +13,7 @@ const upstream = http.createServer((req, res) => {
   req.on('end', () => {
     upstreamRequest = {
       method: req.method, path: url.pathname, token: url.searchParams.get('token'),
+      agent: url.searchParams.get('agent'),
       auth: req.headers.authorization, legacyHeader: req.headers['x-bros-token'],
       cookie: req.headers.cookie, body: Buffer.concat(chunks).toString('utf8'),
     };
@@ -49,7 +50,8 @@ check(pageBody.includes('forwarded automatically') && !pageBody.includes(newToke
 check(upstreamHits === 1, 'browser route cannot leak upstream HTML');
 
 const payload = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
-const forwarded = await fetch(`${base}/mcp?agent=reacher&token=${oldToken}`, {
+const configuredAgent = 'existing-agent-name';
+const forwarded = await fetch(`${base}/mcp?agent=${configuredAgent}&token=${oldToken}`, {
   method: 'POST', headers: {
     'Content-Type': 'application/json', Authorization: `Bearer ${oldToken}`,
     'X-Bros-Token': 'attacker-controlled', Cookie: `token=${newToken}`,
@@ -57,6 +59,7 @@ const forwarded = await fetch(`${base}/mcp?agent=reacher&token=${oldToken}`, {
 });
 const forwardedBody = await forwarded.json();
 check(upstreamRequest.method === 'POST' && upstreamRequest.path === '/mcp', 'method and path preserved');
+check(upstreamRequest.agent === configuredAgent, 'configured agent identity preserved exactly');
 check(upstreamRequest.token === null && upstreamRequest.auth === `Bearer ${newToken}`, 'credential translated outside URL');
 check(!upstreamRequest.legacyHeader && !upstreamRequest.cookie, 'untrusted credential headers stripped');
 check(upstreamRequest.body === payload, 'request body preserved');
@@ -65,4 +68,4 @@ check(forwardedBody.renderedLink.includes('[redacted]') && !JSON.stringify(forwa
 
 await new Promise((resolve) => proxy.close(resolve));
 await new Promise((resolve) => upstream.close(resolve));
-console.log('migration proxy: 13 checks passed');
+console.log('migration proxy: 14 checks passed');

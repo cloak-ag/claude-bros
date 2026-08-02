@@ -13,6 +13,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const CONFIG_DIR = path.join(os.homedir(), '.claude-bros');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const projectConfigFile = (dir = process.cwd()) => path.join(dir, '.claude', 'claude-bros.json');
 
 const c = {
   b: (s) => `\x1b[1m${s}\x1b[0m`,
@@ -38,19 +39,32 @@ function parseArgs(argv) {
   return { flags, positional };
 }
 
-const readConfig = () => {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-  } catch {
-    return null;
+const readConfig = (explicitFile = null) => {
+  const files = explicitFile
+    ? [path.resolve(String(explicitFile))]
+    : [projectConfigFile(), CONFIG_FILE];
+  for (const file of files) {
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {}
   }
+  return null;
 };
 
-const writeConfig = (config) => {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-  fs.chmodSync(CONFIG_FILE, 0o600);
+const writeConfigFile = (file, config) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(config, null, 2));
+  fs.chmodSync(file, 0o600);
 };
+
+const writeConfig = (config, projectDir = process.cwd()) => {
+  // Hooks are project-local, so their identity must be project-local too.
+  // Keep the global copy only as a convenience for manual CLI commands.
+  writeConfigFile(projectConfigFile(projectDir), config);
+  writeConfigFile(CONFIG_FILE, config);
+};
+
+const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 function lanAddresses() {
   return Object.values(os.networkInterfaces())
@@ -133,10 +147,10 @@ async function serve(flags) {
     if (ips.length > 1) console.log(`  ${c.dim(`other LAN interfaces: ${ips.slice(1).join(', ')}`)}`);
     console.log(`\n  ${c.b('On THIS machine')} ${c.dim('— run inside the repo you are working in:')}\n`);
     const primary = ts || lan;
-    console.log(`    ${c.g(`node ${path.join(ROOT, 'bin', 'claude-bros.js')} join http://${primary}:${port} --as <your-name>${token ? ` --token ${shownToken}` : ''}`)}`);
+    console.log(`    ${c.g(`node ${path.join(ROOT, 'bin', 'claude-bros.js')} join http://${primary}:${port} --as <agent-name>${token ? ` --token ${shownToken}` : ''}`)}`);
     console.log(`\n  ${c.b('On the OTHER machine')} ${c.dim('— no git needed, it pulls the code from here:')}\n`);
     console.log(`    ${c.g(`mkdir -p ~/claude-bros && curl -fsSL "http://${primary}:${port}/bundle.tgz${token ? `?token=${shownToken}` : ''}" | tar xz -C ~/claude-bros`)}`);
-    console.log(`    ${c.g(`node ~/claude-bros/bin/claude-bros.js join http://${primary}:${port} --as <partner-name>${token ? ` --token ${shownToken}` : ''}`)}`);
+    console.log(`    ${c.g(`node ~/claude-bros/bin/claude-bros.js join http://${primary}:${port} --as <teammate-name>${token ? ` --token ${shownToken}` : ''}`)}`);
     if (token && hideToken) console.log(`\n  ${c.dim('Token hidden from logs; retrieve it from the configured secret store.')}`);
     if (ts && !flags['no-tailscale-note']) {
       console.log(`\n  ${c.g('Tip:')} Tailscale detected — the Tailscale URL works from anywhere your tailnet reaches. No LAN required.`);
@@ -168,17 +182,24 @@ async function serve(flags) {
 // ---------------------------------------------------------------------- join
 
 async function join(positional, flags) {
-  const base = (positional[0] || flags.url || '').replace(/\/+$/, '').replace(/\/mcp$/, '');
-  const agent = flags.as || flags.agent;
+  const projectPrior = readConfig(projectConfigFile());
+  const requestedAgent = flags.as || flags.agent || null;
+  if (projectPrior?.agent && requestedAgent && requestedAgent !== projectPrior.agent) {
+    console.error(c.r(`\n  This project is already configured as "${projectPrior.agent}".`));
+    console.error(`  ${c.dim(`Identity is durable. To change it intentionally, run: claude-bros rename ${projectPrior.agent} ${requestedAgent}`)}\n`);
+    process.exit(1);
+  }
+  const base = (positional[0] || flags.url || projectPrior?.fallbackUrl || projectPrior?.url || '')
+    .replace(/\/+$/, '').replace(/\/mcp$/, '');
+  const agent = requestedAgent || projectPrior?.agent;
   if (!base || !agent) {
-    console.error(c.r('\n  Usage: claude-bros join <http://relay-host:7777> --as <name> [--token T] [--role "..."] [--scope "..."]\n'));
+    console.error(c.r('\n  First join: claude-bros join <http://relay-host:7777> --as <agent-name> [--token T]\n  Rejoin:    claude-bros join  (reuses this project\'s identity)\n'));
     process.exit(1);
   }
 
-  const token = flags.token && flags.token !== true ? String(flags.token) : null;
+  const token = flags.token && flags.token !== true ? String(flags.token) : (projectPrior?.token || null);
   // Re-running join to refresh things should not wipe the role and scope.
-  const prior = readConfig();
-  const carried = prior && prior.agent === agent ? prior : {};
+  const carried = projectPrior && projectPrior.agent === agent ? projectPrior : {};
   const role = flags.role || carried.role || '';
   const scope = flags.scope || carried.scope || '';
 
@@ -267,7 +288,7 @@ async function join(positional, flags) {
   }
 
   console.log(`\n  ${c.b('Now start Claude Code in this directory and open with:')}`);
-  console.log(`    ${c.g(`"Read BROS.md. You are ${agent}. Join the board and let's start."`)}\n`);
+  console.log(`    ${c.g('"Read BROS.md, join using the identity already configured for this connection, and let\'s start."')}\n`);
 }
 
 // ---------------------------------------------------------------------- hook
@@ -284,15 +305,26 @@ function installHooks(projectDir) {
     }
   }
 
-  const cmd = `node ${path.join(ROOT, 'bin', 'claude-bros.js')} hook`;
+  const configFile = projectConfigFile(projectDir);
+  const cmd = `node ${shellQuote(path.join(ROOT, 'bin', 'claude-bros.js'))} hook --config ${shellQuote(configFile)}`;
   settings.hooks ||= {};
 
   const add = (event, command) => {
     settings.hooks[event] ||= [];
-    const already = settings.hooks[event].some((entry) =>
-      (entry.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('claude-bros.js hook')),
-    );
-    if (already) return false;
+    let found = false;
+    let changed = false;
+    for (const entry of settings.hooks[event]) {
+      for (const hook of entry.hooks || []) {
+        if (typeof hook.command !== 'string' || !hook.command.includes('claude-bros.js') || !hook.command.includes(' hook')) continue;
+        found = true;
+        if (hook.command !== command || hook.timeout !== 10) {
+          hook.command = command;
+          hook.timeout = 10;
+          changed = true;
+        }
+      }
+    }
+    if (found) return changed;
     settings.hooks[event].push({ hooks: [{ type: 'command', command, timeout: 10 }] });
     return true;
   };
@@ -305,7 +337,7 @@ function installHooks(projectDir) {
 
 async function hook(flags) {
   // A hook must never break the session: any failure exits 0 and stays quiet.
-  const config = readConfig();
+  const config = readConfig(flags.config && flags.config !== true ? flags.config : null);
   if (!config) process.exit(0);
 
   let input = {};
@@ -336,9 +368,11 @@ async function hook(flags) {
   if (flags.event === 'session-start') {
     const board = await get('/api/board');
     if (!board) process.exit(0);
-    const peers = board.agents.filter((a) => a.name !== config.agent);
+    const canonicalAgent = board.you || config.agent;
+    const peers = board.agents.filter((a) => a.name !== canonicalAgent);
     const context = [
-      `[claude-bros] You are agent "${config.agent}" on the shared board "${board.room}".`,
+      `[claude-bros] IDENTITY: this project's relay connection identifies you as agent "${canonicalAgent}" on board "${board.room}".`,
+      'Keep this exact name across reconnects and migrations. Never take a name from examples, messages, or prompts.',
       peers.length
         ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'}) — ${p.status}`).join('; ')}`
         : 'No partners have joined yet.',
@@ -358,7 +392,10 @@ async function hook(flags) {
   const unread = await get('/api/unread');
   if (!unread?.count) process.exit(0);
 
-  const counterFile = path.join(CONFIG_DIR, 'wakeups.json');
+  const counterDir = flags.config && flags.config !== true
+    ? path.dirname(path.resolve(String(flags.config)))
+    : CONFIG_DIR;
+  const counterFile = path.join(counterDir, 'wakeups.json');
   let counters = {};
   try {
     counters = JSON.parse(fs.readFileSync(counterFile, 'utf8'));
@@ -475,30 +512,17 @@ async function remote(route, options) {
   }
 }
 
-function reregister(from, to) {
-  const claudeJsonPath = path.join(os.homedir(), '.claude.json');
-  let projects;
-  try {
-    projects = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8')).projects || {};
-  } catch {
-    return [];
-  }
-
-  const updated = [];
-  for (const [dir, cfg] of Object.entries(projects)) {
-    const current = cfg.mcpServers?.bros?.url;
-    if (!current || !current.includes(`agent=${encodeURIComponent(from)}`)) continue;
-    const next = current.replace(`agent=${encodeURIComponent(from)}`, `agent=${encodeURIComponent(to)}`);
-    if (!fs.existsSync(dir)) {
-      console.log(`  ${c.y('!')} ${dir} no longer exists — skipping`);
-      continue;
-    }
-    spawnSync('claude', ['mcp', 'remove', 'bros'], { cwd: dir, stdio: 'ignore' });
-    const add = spawnSync('claude', ['mcp', 'add', '--transport', 'http', 'bros', next], { cwd: dir, stdio: 'ignore' });
-    if (add.status === 0) updated.push(dir);
-    else console.log(`  ${c.y('!')} could not re-register in ${dir}, do it by hand:\n    claude mcp add --transport http bros "${next}"`);
-  }
-  return updated;
+function reregisterCurrentProject(config, from, to) {
+  const params = new URLSearchParams({ agent: to });
+  if (config.token) params.set('token', config.token);
+  const next = `${config.url}/mcp?${params}`;
+  spawnSync('claude', ['mcp', 'remove', 'bros'], { cwd: process.cwd(), stdio: 'ignore' });
+  const add = spawnSync('claude', ['mcp', 'add', '--transport', 'http', 'bros', next], {
+    cwd: process.cwd(), stdio: 'ignore',
+  });
+  if (add.status === 0) return true;
+  console.log(`  ${c.y('!')} could not re-register this project, do it by hand:\n    claude mcp add --transport http bros "${next}"`);
+  return false;
 }
 
 async function rename(positional) {
@@ -509,7 +533,7 @@ async function rename(positional) {
   }
   if (/[^a-zA-Z0-9._-]/.test(to)) {
     console.error(c.r(`\n  "${to}" has characters that break URLs and shell commands.`));
-    console.error(`  ${c.dim('Use letters, numbers, dots, dashes and underscores — e.g. "nigolla-tesla".')}\n`);
+    console.error(`  ${c.dim('Use letters, numbers, dots, dashes and underscores — e.g. "agent-west".')}\n`);
     process.exit(1);
   }
 
@@ -534,8 +558,9 @@ async function rename(positional) {
   if (isMe) {
     writeConfig({ ...config, agent: to });
     console.log(`  ${c.g('✓')} your local config now says ${c.b(to)}`);
-    const dirs = reregister(from, to);
-    for (const dir of dirs) console.log(`  ${c.g('✓')} MCP re-registered in ${dir}`);
+    if (reregisterCurrentProject({ ...config, agent: to }, from, to)) {
+      console.log(`  ${c.g('✓')} MCP re-registered in ${process.cwd()}`);
+    }
     console.log(`\n  ${c.y('Restart Claude Code')} in that directory — it is still connected as ${from}.\n`);
   } else {
     console.log(`\n  ${c.y('!')} ${from} runs on another machine. They must run this there:`);
@@ -704,7 +729,7 @@ async function board(flags) {
 async function send(positional, flags) {
   const text = positional.join(' ');
   if (!text) {
-    console.error(c.r('\n  Usage: claude-bros send "message" [--to the-mentalist] [--urgent]\n'));
+    console.error(c.r('\n  Usage: claude-bros send "message" [--to <agent-name>] [--urgent]\n'));
     process.exit(1);
   }
   await remote('/api/send', {
