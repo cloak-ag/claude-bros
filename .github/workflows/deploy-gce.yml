@@ -70,7 +70,7 @@ jobs:
             --zone="${GCP_ZONE}" \
             --tunnel-through-iap \
             --quiet \
-            --command='set -eu; sudo -u claude-bros git -C /opt/claude-bros pull --ff-only origin main; sudo systemctl restart claude-bros; sudo systemctl is-active --quiet claude-bros; curl -fsS http://127.0.0.1:7777/healthz'
+            --command='set -eu; sudo -u claude-bros git -C /opt/claude-bros pull --ff-only origin main; sudo systemctl restart claude-bros; for attempt in $(seq 1 30); do if curl -fsS http://127.0.0.1:7777/healthz; then exit 0; fi; sleep 1; done; sudo journalctl -u claude-bros --no-pager -n 30; exit 1'
 
       - name: Summary
         run: |
