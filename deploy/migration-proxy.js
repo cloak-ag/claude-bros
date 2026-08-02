@@ -43,8 +43,18 @@ export function createMigrationProxy({ canonicalUrl, oldToken, newToken, quiet =
 
   return http.createServer((req, res) => {
     const incoming = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+        'Cache-Control': 'no-store',
+        'X-Claude-Bros-Migrated-To': canonical.origin,
+      });
+      return res.end();
+    }
     const publicRoute = incoming.pathname === '/healthz' || incoming.pathname === '/api/version';
-    const browserRoute = req.method === 'GET' && ['/', '/help', '/graph'].includes(incoming.pathname);
+    const browserRoute = req.method === 'GET' && ['/', '/index.html', '/help', '/graph'].includes(incoming.pathname);
     if (!publicRoute && !isAuthorized(incoming, req)) {
       res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return res.end(JSON.stringify({

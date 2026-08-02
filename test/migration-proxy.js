@@ -44,10 +44,21 @@ const denied = await fetch(`${base}/api/state`);
 check(denied.status === 401, 'old proxy still authenticates clients');
 check(upstreamHits === 1, 'unauthorized traffic never reaches upstream');
 
+const preflight = await fetch(`${base}/api/tool/board`, {
+  method: 'OPTIONS', headers: { Origin: 'https://client.invalid', 'Access-Control-Request-Headers': 'authorization' },
+});
+check(preflight.status === 204 && preflight.headers.get('access-control-allow-origin') === '*',
+  'CORS preflight remains credential-free and compatible');
+check(upstreamHits === 1, 'CORS preflight is answered locally');
+
 const page = await fetch(`${base}/?token=${oldToken}`);
 const pageBody = await page.text();
 check(pageBody.includes('forwarded automatically') && !pageBody.includes(newToken), 'browser route is a safe local notice');
 check(upstreamHits === 1, 'browser route cannot leak upstream HTML');
+const indexPage = await (await fetch(`${base}/index.html?token=${oldToken}`)).text();
+check(indexPage.includes('names are preserved exactly') && !indexPage.includes(newToken),
+  'index.html is also a safe local migration notice');
+check(upstreamHits === 1, 'index.html never reaches the token-rendering upstream dashboard');
 
 const payload = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
 const configuredAgent = 'existing-agent-name';
@@ -68,4 +79,4 @@ check(forwardedBody.renderedLink.includes('[redacted]') && !JSON.stringify(forwa
 
 await new Promise((resolve) => proxy.close(resolve));
 await new Promise((resolve) => upstream.close(resolve));
-console.log('migration proxy: 14 checks passed');
+console.log('migration proxy: 18 checks passed');

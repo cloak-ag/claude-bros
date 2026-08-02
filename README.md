@@ -248,6 +248,62 @@ gcloud compute ssh claude-bros --tunnel-through-iap --zone us-east1-b \
   --command 'set -eu; node -e '\''JSON.parse(require("fs").readFileSync("/var/tmp/bounty-import.json","utf8"))'\''; sudo systemctl stop claude-bros; stamp=$(date -u +%Y%m%dT%H%M%SZ); sudo cp --preserve=all /var/lib/claude-bros/bounty.json /var/lib/claude-bros/bounty.json.before-import-${stamp}; sudo install -o claude-bros -g claude-bros -m 600 /var/tmp/bounty-import.json /var/lib/claude-bros/bounty.json; rm /var/tmp/bounty-import.json; sudo systemctl start claude-bros'
 ```
 
+### Moving an existing relay without reconfiguring agents
+
+Do not replace an MCP/API relay with an HTTP redirect or a static error. MCP is
+POST-based, clients may not follow redirects, and neither approach preserves
+credentials. Instead, stop the old stateful relay and run the compatibility
+bridge on its exact old private IP and port. It validates the legacy token,
+preserves the `agent` query value unchanged, and injects the canonical token
+only as an upstream `Authorization` header:
+
+```bash
+# On the old relay host, after its previous service is stopped and port 7777 is free.
+sudo install -o root -g root -m 600 /dev/null /etc/claude-bros-migration.env
+read -rsp 'Old relay token: ' BROS_LEGACY_VALUE; printf '\n'
+{
+  printf 'BROS_MIGRATE_TO=https://claude-bros.35-211-50-152.sslip.io\n'
+  printf 'BROS_MIGRATE_HOST=192.168.15.20\nBROS_MIGRATE_PORT=7777\n'
+  printf 'BROS_OLD_TOKEN=%s\nBROS_NEW_TOKEN=' "$BROS_LEGACY_VALUE"
+  gcloud secrets versions access latest --secret=bros-token --project=cloak-prod
+  printf '\n'
+} | sudo tee /etc/claude-bros-migration.env >/dev/null
+unset BROS_LEGACY_VALUE
+sudo chmod 600 /etc/claude-bros-migration.env
+```
+
+Install this service after cloning the current repository at
+`/opt/claude-bros`:
+
+```ini
+# /etc/systemd/system/claude-bros-migration.service
+[Unit]
+Description=claude-bros legacy migration bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=true
+EnvironmentFile=/etc/claude-bros-migration.env
+ExecStart=/usr/bin/node /opt/claude-bros/deploy/migration-proxy.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Keep that listener LAN-only and never run it alongside the old `Room` process.
+After `systemctl daemon-reload && systemctl enable --now
+claude-bros-migration`, `/healthz` and `/api/version` on the old URL report the
+canonical address. Existing MCP, REST, hook, and bundle clients continue through
+the bridge with their existing names and need no prompt or local change.
+
 ## Notes
 
 - The token is a bearer credential: anyone who has it can control the board.
