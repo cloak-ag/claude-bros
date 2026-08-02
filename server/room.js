@@ -73,8 +73,9 @@ export class Room {
         return this;
       }
     }
-    // Fallback to file-based (if file wasn't loaded in constructor)
-    if (this.file && !fs.existsSync(this.file)) return this;
+    // Fallback to file-based. No file at all means in-memory (tests) — there is
+    // nothing to read, and readFileSync(null) would throw.
+    if (!this.file || !fs.existsSync(this.file)) return this;
     try {
       const disk = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       this.state = { ...this.state, ...disk, counters: { ...this.state.counters, ...(disk.counters || {}) } };
@@ -87,9 +88,17 @@ export class Room {
   }
 
   save() {
-    // If persistence layer provided (PostgreSQL), use it
+    // Persistence layer (PostgreSQL). Debounced like the file path, because a
+    // busy board mutates several times per tool call and each write ships the
+    // whole document. The promise is always caught — an unhandled rejection
+    // from a DB blip would take the relay down.
     if (this.persistence?.save) {
-      this.persistence.save(this.name, this.state);
+      if (this.saveTimer) return;
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null;
+        this.flush();
+      }, 250);
+      this.saveTimer.unref?.();
       return;
     }
     // Fallback to file-based
@@ -160,6 +169,21 @@ export class Room {
       if (numbered) parts.push(`${numbered} unsequenced message(s)`);
       console.log(`[bros] migrated ${parts.join(' and ')} from an older state file`);
       this.save();
+    }
+  }
+
+  /**
+   * Write immediately rather than on the debounce. Used on shutdown, where a
+   * pending timer would otherwise be lost with the process.
+   */
+  async flush() {
+    if (!this.persistence?.save) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    try {
+      await this.persistence.save(this.name, this.state);
+    } catch (err) {
+      console.error('[bros] state save failed:', err.message);
     }
   }
 

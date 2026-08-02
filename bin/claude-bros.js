@@ -94,7 +94,7 @@ async function serve(flags) {
   let persistence = null;
   let stateSource = dataFile;
   if (process.env.DATABASE_URL) {
-    const pool = getPool();
+    const pool = await getPool();
     // Ensure schema exists before Room loads
     await ensureSchema(pool).catch(err => console.error('[bros] schema init failed:', err.message));
     persistence = {
@@ -102,6 +102,14 @@ async function serve(flags) {
       save: (roomName, state) => saveState(roomName, state, pool),
     };
     stateSource = `PostgreSQL (${process.env.DATABASE_URL.replace(/:[^:@]+@/, ':****@')})`;
+  }
+
+  // Cloud Run sets PORT. Without a database there, the board lives in the
+  // container filesystem and dies with the instance — say so rather than let it
+  // look persistent.
+  if (process.env.PORT && !process.env.DATABASE_URL) {
+    console.warn(`\n  ${c.y('!')} Running in a container without DATABASE_URL — board state is EPHEMERAL`);
+    console.warn(`  ${c.dim('  it will be lost when the instance is recycled. Set DATABASE_URL to persist.')}`);
   }
 
   const room = await new Room({ name, file: dataFile, persistence }).init();
@@ -135,8 +143,9 @@ async function serve(flags) {
   });
 
   // Graceful shutdown — closeAllConnections cuts pinned dashboard tabs so restarts work
-  const bye = () => {
+  const bye = async () => {
     console.log(c.dim('\n  relay down\n'));
+    await room.flush?.();
     server.close(() => process.exit(0));
     // server.close() alone waits for keep-alive sockets to drain, and a browser
     // holding the dashboard open never drains. The old process then lingers and
