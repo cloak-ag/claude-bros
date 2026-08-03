@@ -272,7 +272,7 @@ ${NAV_CSS}
 
   <section class="submissions-section">
     <div class="submissions-head">
-      <div><h2>Submissions</h2><p class="muted">Confirmed candidates are ready only when every required Anza report field is recorded.</p></div>
+      <div><h2>Submissions</h2><p class="muted">Confirmed candidates are ready only when every required Anza report field is recorded. Blocked candidates are ordered closest to filing first.</p></div>
       <div class="muted" id="submission-summary"></div>
     </div>
     <div class="submission-grid">
@@ -768,7 +768,8 @@ async function tick() {
       + '" data-focus-key="submission-' + esc(model.id) + '">'
       + '<div class="work-head"><code class="muted work-id">' + esc(model.id) + '</code>'
       + '<div class="work-title">' + esc(model.values.title || f.title) + '</div></div>'
-      + '<div class="work-meta">' + pill(model.values.severity, model.values.severity)
+      + '<div class="work-meta">' + (model.rank ? '<span class="muted">rank #' + model.rank + '</span>' : '')
+      + pill(model.values.severity, model.values.severity)
       + pill(kind, label)
       + '<span class="muted">' + model.requiredComplete + '/' + model.requiredTotal + ' required checks</span></div>'
       + (model.values.summary ? '<span class="submission-summary-copy">' + esc(model.values.summary) + '</span>' : '')
@@ -776,15 +777,22 @@ async function tick() {
       + '</button>';
   };
   const submissionSeverity = (model) => SEV[model.values.severity] ?? 9;
-  const sortSubmissions = (list) => [...list].sort((a, b) =>
-    submissionSeverity(a) - submissionSeverity(b) || String(a.id).localeCompare(String(b.id), undefined, { numeric:true }));
+  const readinessScore = (model) => model.requiredTotal ? model.requiredComplete / model.requiredTotal : 0;
+  const compareReadiness = (a, b) =>
+    readinessScore(b) - readinessScore(a)
+      || a.blockers.length - b.blockers.length
+      || submissionSeverity(a) - submissionSeverity(b)
+      || String(a.id).localeCompare(String(b.id), undefined, { numeric:true });
+  const candidateRanking = [...readySubmissions, ...needsWorkSubmissions].sort(compareReadiness);
+  candidateRanking.forEach((model, index) => { model.rank = index + 1; });
+  const sortSubmissions = (list) => [...list].sort(compareReadiness);
   const readySorted = sortSubmissions(readySubmissions);
   const needsWorkSorted = sortSubmissions(needsWorkSubmissions);
   const reportedSorted = sortSubmissions(reportedSubmissions);
   el('ready-count').textContent = readySorted.length;
   el('needs-work-count').textContent = needsWorkSorted.length;
   el('reported-count').textContent = reportedSorted.length;
-  el('submission-summary').textContent = readySorted.length + ' ready · ' + needsWorkSorted.length + ' blocked · ' + reportedSorted.length + ' submitted';
+  el('submission-summary').textContent = readySorted.length + ' ready · ' + needsWorkSorted.length + ' blocked · ' + reportedSorted.length + ' submitted · ranked by readiness';
   el('submissions-ready').innerHTML = readySorted.length ? readySorted.map(submissionCard).join('') : empty('No submission is ready.');
   el('submissions-needs-work').innerHTML = needsWorkSorted.length ? needsWorkSorted.map(submissionCard).join('') : empty('No blocked candidates.');
   el('submissions-reported').innerHTML = reportedSorted.length ? reportedSorted.map(submissionCard).join('') : empty('No findings marked reported yet.');

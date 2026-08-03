@@ -743,6 +743,9 @@ check('submission queues are bounded, scrollable, and open complete modal report
     && pageText.includes('role="dialog"') && pageText.includes('data-submission-id')
     && pageText.includes("modalField('PoC / reproduction'")
     && pageText.includes("modalField('RULES.md category'"));
+check('submissions are explicitly ranked by readiness before severity',
+  pageText.includes('ranked by readiness') && pageText.includes('readinessScore(b) - readinessScore(a)')
+    && pageText.includes('candidateRanking.forEach'));
 check('live refresh preserves selection, modal, scroll and focus state',
   pageText.includes('hasDashboardSelection()') && pageText.includes('captureRenderState()')
     && pageText.includes('restoreRenderState(renderState)')
