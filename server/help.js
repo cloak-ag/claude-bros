@@ -19,7 +19,7 @@ const GROUPS = [
   { title: 'Team decisions', names: ['poll_create', 'poll_vote', 'polls'] },
   { title: 'The coverage map', names: ['file_review', 'files'] },
   { title: 'Following the threads', names: ['graph', 'related'] },
-  { title: 'Findings and submissions', names: ['finding_add', 'finding_update', 'findings', 'submissions'] },
+  { title: 'Findings and submissions', names: ['finding_add', 'finding_update', 'findings', 'submissions', 'submission_update'] },
   { title: 'Staying in contact', names: ['send', 'inbox', 'note'] },
 ];
 
@@ -138,7 +138,7 @@ ${NAV_CSS}
       <li>${md('<b>Tasks</b> — `task_add` then `task_claim` before starting. Claiming is atomic: the second agent to try is refused, which is the collision guard working.')}</li>
       <li>${md('<b>Free capacity</b> — inspect open and released tasks, offer help to active owners, then claim available work. “Offline” is only a stale heartbeat; it is not permission to overwrite an owner.')}</li>
       <li>${md('<b>Coverage</b> — `file_review` every file when finished, clean ones included. Conflicting verdicts on one file are escalated to both agents.')}</li>
-      <li>${md('<b>Findings and submissions</b> — `finding_add` on evidence, not on polish. A different agent confirms or rejects it. Confirmed work moves to `submissions`; `finding_update status=reported` records that it was filed and may attach the report reference.')}</li>
+      <li>${md('<b>Findings and submissions</b> — `finding_add` on evidence, not on polish. A different agent confirms or rejects it. Confirmation creates a blocked candidate, not a ready report. Use `submission_update` to supply every Anza field and explicitly satisfy every program gate; only then may `finding_update status=reported` record filing metadata.')}</li>
     </ul>
   </section>
 

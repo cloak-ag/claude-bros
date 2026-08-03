@@ -55,14 +55,14 @@ check('initialize records client implementation without making it a role',
   room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 25, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 26, `got ${tools.result.tools.length}`);
 const humanToolsRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
 });
 const humanTools = await humanToolsRes.json();
 check('only the human credential discovers message moderation tools',
-  humanTools.result.tools.length === 27
+  humanTools.result.tools.length === 28
     && ['message_edit', 'message_delete'].every((name) => humanTools.result.tools.some((tool) => tool.name === name))
     && !tools.result.tools.some((tool) => tool.name.startsWith('message_')));
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
@@ -235,7 +235,44 @@ await call('alpha', 'finding_update', { id: 'F1', status: 'confirmed', note: 're
 const findings = await call('beta', 'findings');
 check('peer confirmation is recorded', findings.text.includes('"status": "confirmed"'));
 const ready = await call('beta', 'submissions');
-check('confirmed findings move into the submission queue', ready.text.includes('F1') && ready.text.includes('confirmed'));
+check('confirmed findings enter the submission queue blocked, not falsely ready',
+  ready.text.includes('F1') && ready.text.includes('"state": "blocked"') && ready.text.includes('complete inline PoC'));
+const prematureReport = await call('beta', 'finding_update', {
+  id: 'F1', status: 'reported', submission_url: 'https://reports.example/premature',
+});
+check('a blocked candidate cannot be marked reported',
+  prematureReport.isError && prematureReport.text.includes('not submission-ready'));
+const submissionDraft = await call('beta', 'submission_update', {
+  id: 'F1',
+  title: 'Order endpoint exposes another customer’s order',
+  summary: 'An authenticated user can read an order owned by another account.',
+  details: 'The handler loads the requested order without comparing its owner to the authenticated subject.',
+  poc: 'Inline test: create users A and B, create order for B, request /orders/{B_ORDER} as A, and assert the response contains B’s order.',
+  impact: 'Authenticated cross-account disclosure of order contents, demonstrated by the inline test.',
+  ecosystem: 'Other',
+  package_name: 'orders-api',
+  affected_versions: 'current master',
+  patched_versions: 'none',
+  severity: 'high',
+  cvss: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N',
+  cwe: 'CWE-639',
+  commit: '0123456789abcdef0123456789abcdef01234567',
+  category: 'direct loss of confidentiality',
+  owner: 'human-owner',
+  duplicate_check: 'Searched public issues and advisories for the endpoint and ownership failure; no match.',
+  master_checked_at: '2026-08-05T16:01:00Z',
+  known_issues_checked_at: '2026-08-05T16:02:00Z',
+  live_on_master: true,
+  inline_poc: true,
+  impact_demonstrated: true,
+  known_issues_checked: true,
+  one_finding: true,
+  confidential: true,
+  two_factor_verified: true,
+  window_verified: true,
+});
+check('complete Anza fields move a candidate to ready',
+  submissionDraft.text.includes('"state": "ready"') && submissionDraft.text.includes('"complete": "18/18"'));
 await call('alpha', 'finding_update', {
   id: 'F1', status: 'reported', submission_url: 'https://reports.example/F1',
   submission_note: 'Filed with the program',
@@ -699,7 +736,17 @@ check('dashboard tab links carry the token and point at real routes',
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard separates active and archived work', pageText.includes('Active queue') && pageText.includes('Standing &amp; actionable'));
 check('dashboard has a first-class submissions section',
-  pageText.includes('<h2>Submissions</h2>') && pageText.includes('Ready to submit') && pageText.includes('Submitted'));
+  pageText.includes('<h2>Submissions</h2>') && pageText.includes('Ready to submit')
+    && pageText.includes('Needs report work') && pageText.includes('Submitted'));
+check('submission queues are bounded, scrollable, and open complete modal reports',
+  pageText.includes('class="submission-list"') && pageText.includes('max-height:360px')
+    && pageText.includes('role="dialog"') && pageText.includes('data-submission-id')
+    && pageText.includes("modalField('PoC / reproduction'")
+    && pageText.includes("modalField('RULES.md category'"));
+check('live refresh preserves selection, modal, scroll and focus state',
+  pageText.includes('hasDashboardSelection()') && pageText.includes('captureRenderState()')
+    && pageText.includes('restoreRenderState(renderState)')
+    && pageText.includes('modalScroll') && pageText.includes('data-preserve-scroll'));
 check('dashboard separates removed identities from current members',
   pageText.includes('Current members') && pageText.includes('Removed identities'));
 check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));

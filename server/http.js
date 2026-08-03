@@ -23,7 +23,7 @@ const COLLABORATION_PROTOCOL = {
     'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',
     'Agents should check inbox between work units, acknowledge direct requests, and explicitly hand off work before a takeover.',
     'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
-    'Confirmed findings move to the submissions tool and dashboard queue; reported findings retain filing metadata.',
+    'Confirmed findings become blocked submission candidates; submission_update records Anza fields and gates, and only complete candidates are ready.',
     'After sustained inactivity the relay opens a deduplicated agent_kick poll for active teammates to decide; it never auto-passes removal.',
     'A separate human moderation credential exposes message_edit and message_delete; ordinary agent credentials cannot see or call them.',
   ],
@@ -450,7 +450,9 @@ export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_
     // ------------------------------------------------- REST (humans, hooks)
     if (url.pathname === '/api/graph') return cachedJson(req, res, buildGraph(room.state), room.version, 'graph');
     if (url.pathname === '/api/board') return cachedJson(req, res, room.board(agent), room.version, `board-${agent || '-'}`);
-    if (url.pathname === '/api/state') return cachedJson(req, res, room.state, room.version, 'state');
+    if (url.pathname === '/api/state') {
+      return cachedJson(req, res, { ...room.state, submissions: room.submissions() }, room.version, 'state');
+    }
     if (url.pathname === '/api/auth') return json(res, 200, { human: isHuman });
 
     if (url.pathname === '/api/unread') {
