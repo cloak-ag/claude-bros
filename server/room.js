@@ -1105,9 +1105,22 @@ export class Room {
     const severity = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
     return this.state.findings
       .filter((finding) => ['confirmed', 'reported'].includes(finding.status))
-      .sort((a, b) => (severity[a.severity] ?? 9) - (severity[b.severity] ?? 9)
-        || String(b.reportedAt || b.confirmedAt || b.ts || '').localeCompare(String(a.reportedAt || a.confirmedAt || a.ts || '')))
-      .map((finding) => ({ ...finding, readiness: this.submissionReadiness(finding) }));
+      .map((finding) => ({ ...finding, readiness: this.submissionReadiness(finding) }))
+      .sort((a, b) => {
+        // Keep the MCP queue in the same order as the dashboard: ready
+        // candidates first, then the candidates closest to ready, then filed
+        // history. Severity is only a tie-breaker inside a readiness tier.
+        const tier = (finding) => finding.status === 'reported'
+          ? 2
+          : finding.readiness.ready ? 0 : 1;
+        const score = (finding) => finding.readiness.requiredTotal
+          ? finding.readiness.requiredComplete / finding.readiness.requiredTotal : 0;
+        return tier(a) - tier(b)
+          || score(b) - score(a)
+          || a.readiness.blockers.length - b.readiness.blockers.length
+          || (severity[a.severity] ?? 9) - (severity[b.severity] ?? 9)
+          || String(b.reportedAt || b.confirmedAt || b.ts || '').localeCompare(String(a.reportedAt || a.confirmedAt || a.ts || ''));
+      });
   }
 
   // ----------------------------------------------------------------- goals
