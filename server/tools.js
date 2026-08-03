@@ -281,14 +281,53 @@ export const TOOL_DEFS = [
   },
   {
     name: 'submissions',
-    title: 'List report-ready and submitted findings',
+    title: 'List submission candidates and their blockers',
     description:
-      'Read the submission queue: confirmed findings ready for a human to file, followed by findings already marked reported with their submission metadata.',
+      'Read independently confirmed candidates, their Anza advisory fields, explicit readiness blockers, and reports already filed. Confirmation is evidence review, NOT submission readiness.',
     inputSchema: {
       type: 'object',
       properties: {
         status: str('Optional: confirmed | reported.', { enum: ['confirmed', 'reported'] }),
       },
+    },
+  },
+  {
+    name: 'submission_update',
+    title: 'Build an Anza-compliant private advisory',
+    description:
+      'Fill the complete private-advisory record for one independently confirmed finding. The relay keeps it blocked until the inline PoC, demonstrated impact, current-master/known-issue checks, confidentiality, 2FA, owner, and submission-window gates are all explicitly satisfied. Never mark a gate true from prose or assumption.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Confirmed finding id, e.g. F15.'),
+        title: str('Clean advisory title; do not include internal IDs or “GHSA DRAFT”.'),
+        summary: str('Concise vulnerability and consequence summary.'),
+        details: str('Root cause, adversary model, affected code, and exact mechanism.'),
+        poc: str('Complete self-contained inline PoC source plus exact reproduction steps and expected/observed results. No attachments or external file links.'),
+        impact: str('Only the impact directly demonstrated by the PoC.'),
+        ecosystem: str('Optional GitHub affected-product ecosystem, normally Rust or Other.'),
+        package_name: str('Optional affected package/component name.'),
+        affected_versions: str('Optional affected version/range.'),
+        patched_versions: str('Optional patched version/range, if any.'),
+        severity: str('Optional GitHub severity selection.'),
+        cvss: str('Optional CVSS v3/v4 vector.'),
+        cwe: str('Optional CWE identifier.'),
+        commit: str('Exact moving agave/master commit where the complete PoC was reproduced.'),
+        category: str('Exact eligible impact category from RULES.md; do not self-assign “Other”.'),
+        owner: str('Human GitHub account responsible for filing.'),
+        duplicate_check: str('Public/known issue searches performed and why near matches are distinct.'),
+        master_checked_at: str('UTC timestamp of the current-master liveness check.'),
+        known_issues_checked_at: str('UTC timestamp of the final public/known-issue check.'),
+        live_on_master: { type: 'boolean', description: 'True only after reproducing against current moving master.' },
+        inline_poc: { type: 'boolean', description: 'True only when the complete PoC is present inline in this advisory.' },
+        impact_demonstrated: { type: 'boolean', description: 'True only when the PoC directly demonstrates the stated impact.' },
+        known_issues_checked: { type: 'boolean', description: 'True only after the final duplicate/public check.' },
+        one_finding: { type: 'boolean', description: 'True when the advisory contains exactly one finding.' },
+        confidential: { type: 'boolean', description: 'True when private handling/no public disclosure is verified.' },
+        two_factor_verified: { type: 'boolean', description: 'True when the human filing account has GitHub 2FA enabled.' },
+        window_verified: { type: 'boolean', description: 'True only when filing inside the official submission window.' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -978,7 +1017,50 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
 
     case 'submissions': {
       const list = room.submissions().filter((finding) => !args.status || finding.status === args.status);
-      return text(list.length ? list : 'No confirmed or reported findings yet.');
+      return text(list.length ? list : 'No independently confirmed submission candidates or reported findings yet.');
+    }
+
+    case 'submission_update': {
+      const result = room.updateSubmission(agent, args.id, {
+        title: args.title,
+        summary: args.summary,
+        details: args.details,
+        poc: args.poc,
+        impact: args.impact,
+        ecosystem: args.ecosystem,
+        packageName: args.package_name,
+        affectedVersions: args.affected_versions,
+        patchedVersions: args.patched_versions,
+        severity: args.severity,
+        cvss: args.cvss,
+        cwe: args.cwe,
+        commit: args.commit,
+        category: args.category,
+        owner: args.owner,
+        duplicateCheck: args.duplicate_check,
+        masterCheckedAt: args.master_checked_at,
+        knownIssuesCheckedAt: args.known_issues_checked_at,
+        liveOnMaster: args.live_on_master,
+        inlinePoc: args.inline_poc,
+        impactDemonstrated: args.impact_demonstrated,
+        knownIssuesChecked: args.known_issues_checked,
+        oneFinding: args.one_finding,
+        confidential: args.confidential,
+        twoFactorVerified: args.two_factor_verified,
+        windowVerified: args.window_verified,
+      });
+      if (!result.ok) return fail(result.error);
+      const readiness = result.readiness;
+      room.send(agent, {
+        to: 'all',
+        text: `${args.id} submission record updated: ${readiness.state}; ${readiness.blockers.length} blocker(s) remain.`,
+      });
+      return text({
+        id: args.id,
+        state: readiness.state,
+        complete: `${readiness.requiredComplete}/${readiness.requiredTotal}`,
+        blockers: readiness.blockers,
+      });
     }
 
     case 'related': {

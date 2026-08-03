@@ -134,21 +134,65 @@ ${NAV_CSS}
   .finding-item { padding:13px 0; }
   .finding-item .path { margin-top:7px; color:var(--ink-2); overflow-wrap:anywhere; }
 
-  /* Confirmed findings are deliverables, not ordinary queue noise. Keep the
-     filing queue full-width so evidence and report metadata have room. */
+  /* Submission candidates stay bounded; the complete bounty report lives in
+     an accessible modal instead of turning the board into a wall of text. */
   .submissions-head { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; margin-bottom:16px; }
   .submissions-head h2 { margin-bottom:4px; }
   .submissions-head p { margin:0; }
-  .submission-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+  .submission-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
   .submission-column { min-width:0; }
-  .submission-card { border:1px solid var(--line); border-radius:10px; background:var(--plane); padding:13px 14px; }
+  .submission-list { max-height:360px; overflow-y:auto; padding-right:4px; overscroll-behavior:contain;
+                     scrollbar-width:thin; scrollbar-color:var(--rule) transparent; }
+  .submission-card { display:block; width:100%; appearance:none; border:1px solid var(--line); border-radius:10px;
+                     background:var(--plane); color:var(--ink); padding:13px 14px; text-align:left; cursor:pointer; }
   .submission-card + .submission-card { margin-top:10px; }
-  .submission-copy { margin-top:9px; color:var(--ink-2); white-space:pre-wrap; overflow-wrap:anywhere; }
-  .submission-detail { margin-top:10px; border-top:1px solid var(--line); padding-top:9px; }
-  .submission-detail summary { cursor:pointer; color:var(--muted); font-size:12px; }
-  @media (max-width:840px) {
+  .submission-card:hover { border-color:var(--muted); }
+  .submission-card:focus-visible { outline:2px solid var(--series-1); outline-offset:2px; }
+  .submission-card .work-title { flex:1; }
+  .submission-summary-copy { display:-webkit-box; margin-top:8px; color:var(--ink-2); font-size:12.5px;
+                             overflow:hidden; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:3; }
+  .blocker-count { color:var(--warning); font-size:12px; }
+  @media (max-width:1050px) {
     .submission-grid { grid-template-columns:1fr; }
     .submissions-head { align-items:flex-start; flex-direction:column; }
+    .submission-list { max-height:300px; }
+  }
+
+  .modal-backdrop[hidden] { display:none; }
+  .modal-backdrop { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:24px;
+                    background:rgba(0,0,0,.68); }
+  .submission-modal { width:min(960px,100%); max-height:min(900px,calc(100vh - 48px)); overflow:auto;
+                      border:1px solid var(--rule); border-radius:14px; background:var(--surface);
+                      color:var(--ink); box-shadow:0 24px 80px rgba(0,0,0,.45); }
+  .modal-head { position:sticky; top:0; z-index:1; display:flex; align-items:flex-start; gap:18px;
+                padding:18px 20px; border-bottom:1px solid var(--line); background:var(--surface); }
+  .modal-head-copy { flex:1; min-width:0; }
+  .modal-kicker { color:var(--muted); font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+  .modal-title { margin:3px 0 8px; font-size:21px; line-height:1.3; overflow-wrap:anywhere; }
+  .modal-close { flex:none; appearance:none; width:36px; height:36px; border:1px solid var(--line);
+                 border-radius:8px; background:var(--plane); color:var(--ink); cursor:pointer; font-size:20px; }
+  .modal-close:focus-visible { outline:2px solid var(--series-1); outline-offset:2px; }
+  .modal-body { padding:20px; }
+  .submission-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+  .submission-field { min-width:0; border:1px solid var(--line); border-radius:9px; padding:12px 13px; }
+  .submission-field.wide { grid-column:1 / -1; }
+  .field-label { display:block; margin-bottom:5px; color:var(--muted); font-size:10px; font-weight:700;
+                 letter-spacing:.08em; text-transform:uppercase; }
+  .field-value { color:var(--ink-2); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .field-value.missing { color:var(--warning); font-style:italic; }
+  .field-source { margin-left:6px; color:var(--muted); font-size:10px; text-transform:none; letter-spacing:0; }
+  .poc { max-height:340px; overflow:auto; margin:0; padding:12px; border-radius:7px; background:var(--plane);
+         color:var(--ink-2); font:12px/1.55 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .checklist { display:grid; gap:7px; margin:0; padding:0; list-style:none; }
+  .checklist li { display:flex; align-items:flex-start; gap:8px; color:var(--ink-2); }
+  .check-ok { color:var(--good); }
+  .check-missing { color:var(--warning); }
+  .blockers { margin:7px 0 0; padding-left:20px; color:var(--ink-2); }
+  @media (max-width:680px) {
+    .modal-backdrop { padding:0; place-items:stretch; }
+    .submission-modal { width:100%; max-height:100vh; border-radius:0; }
+    .submission-fields { grid-template-columns:1fr; }
+    .submission-field.wide { grid-column:auto; }
   }
 
   /* Coverage is a full-width ledger. Each review remains a single row so the
@@ -228,12 +272,13 @@ ${NAV_CSS}
 
   <section class="submissions-section">
     <div class="submissions-head">
-      <div><h2>Submissions</h2><p class="muted">Confirmed findings ready to file, separated from reports already submitted.</p></div>
+      <div><h2>Submissions</h2><p class="muted">Confirmed candidates are ready only when every required Anza report field is recorded.</p></div>
       <div class="muted" id="submission-summary"></div>
     </div>
     <div class="submission-grid">
-      <div class="submission-column"><div class="group-title">Ready to submit <span class="count" id="ready-count">0</span></div><div id="submissions-ready"></div></div>
-      <div class="submission-column"><div class="group-title">Submitted <span class="count" id="reported-count">0</span></div><div id="submissions-reported"></div></div>
+      <div class="submission-column"><div class="group-title">Ready to submit <span class="count" id="ready-count">0</span></div><div class="submission-list" data-preserve-scroll id="submissions-ready"></div></div>
+      <div class="submission-column"><div class="group-title">Needs report work <span class="count" id="needs-work-count">0</span></div><div class="submission-list" data-preserve-scroll id="submissions-needs-work"></div></div>
+      <div class="submission-column"><div class="group-title">Submitted <span class="count" id="reported-count">0</span></div><div class="submission-list" data-preserve-scroll id="submissions-reported"></div></div>
     </div>
   </section>
 
@@ -247,6 +292,16 @@ ${NAV_CSS}
   </section>
 
   <section><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
+</div>
+
+<div class="modal-backdrop" id="submission-modal" hidden>
+  <div class="submission-modal" role="dialog" aria-modal="true" aria-labelledby="submission-modal-title" tabindex="-1">
+    <div class="modal-head">
+      <div class="modal-head-copy"><div class="modal-kicker" id="submission-modal-kicker"></div><h2 class="modal-title" id="submission-modal-title">Submission</h2><div id="submission-modal-status"></div></div>
+      <button class="modal-close" id="submission-modal-close" type="button" aria-label="Close submission details">×</button>
+    </div>
+    <div class="modal-body" id="submission-modal-body"></div>
+  </div>
 </div>
 
 <script>
@@ -352,6 +407,173 @@ el('coverage-filter').addEventListener('input', applyCoverageFilter);
 let taskArchiveOpen = false;
 let rejectedArchiveOpen = false;
 let agentArchiveOpen = false;
+let submissionById = new Map();
+let modalReturnFocus = null;
+let openSubmissionId = null;
+
+const present = (value) => value !== undefined && value !== null && String(value).trim() !== '';
+const pick = (...values) => values.find(present);
+const envValue = (env, ...keys) => {
+  const wanted = keys.map((key) => key.toLowerCase());
+  const entry = Object.entries(env || {}).find(([key]) => wanted.includes(key.toLowerCase()));
+  return entry ? pick(entry[1]?.value, entry[1]) : '';
+};
+const cleanSubmissionTitle = (finding) => String(pick(finding.submission?.title, finding.cleanTitle, finding.title) || '')
+  .replace(/^\s*(?:\[[^\]]+\]|F\d+\s*[:—-])\s*/i, '').replace(/\s+/g, ' ').trim();
+
+const buildSubmission = (finding, env) => {
+  const submission = finding.submission || {};
+  const product = [submission.ecosystem, submission.packageName].filter(present).join(' / ');
+  const version = [submission.affectedVersions ? 'Affected: ' + submission.affectedVersions : '',
+    submission.patchedVersions ? 'Patched: ' + submission.patchedVersions : ''].filter(present).join(' / ');
+  const values = {
+    title:pick(submission.title, cleanSubmissionTitle(finding)), summary:submission.summary, details:submission.details, poc:submission.poc,
+    impact:submission.impact, product, version, severity:pick(submission.severity, finding.severity),
+    cvss:submission.cvss, cwe:submission.cwe, citedCommit:submission.commit,
+    currentCommit:envValue(env, 'commit', 'current_commit'), duplicateCheck:submission.duplicateCheck,
+    owner:submission.owner, category:submission.category, masterCheckedAt:submission.masterCheckedAt,
+    knownIssuesCheckedAt:submission.knownIssuesCheckedAt,
+  };
+  const requirements = [
+    ['Clean report title', present(submission.title)],
+    ['Summary', present(submission.summary)],
+    ['Details / vulnerability mechanism', present(submission.details)],
+    ['Complete inline PoC and reproduction', present(submission.poc)],
+    ['Impact', present(submission.impact)],
+    ['Exact master commit reproduced', present(submission.commit)],
+    ['RULES.md impact category', present(submission.category)],
+    ['Human submission owner', present(submission.owner)],
+    ['Current-master check timestamp', present(submission.masterCheckedAt)],
+    ['Known/public-issue check timestamp', present(submission.knownIssuesCheckedAt)],
+    ['Confirmed live on current master', submission.liveOnMaster === true],
+    ['PoC is self-contained and inline', submission.inlinePoc === true],
+    ['PoC demonstrates claimed impact', submission.impactDemonstrated === true],
+    ['Known/public issues checked', submission.knownIssuesChecked === true],
+    ['One finding per advisory', submission.oneFinding === true],
+    ['Private/confidential handling confirmed', submission.confidential === true],
+    ['Human owner GitHub 2FA verified', submission.twoFactorVerified === true],
+    ['Submission window verified', submission.windowVerified === true],
+  ].map(([label, ok]) => ({ label, ok:Boolean(ok) }));
+  const source = finding.readiness || {};
+  const blockers = Array.isArray(source.blockers) ? source.blockers.map(String) : requirements.filter((item) => !item.ok).map((item) => item.label);
+  const readiness = source.state === 'reported' || finding.status === 'reported' ? 'submitted'
+    : source.ready === true || source.state === 'ready' ? 'ready' : 'needs_work';
+  return {
+    id:finding.id, finding, values, requirements, blockers, readiness,
+    requiredComplete:Number.isFinite(source.requiredComplete) ? source.requiredComplete : requirements.filter((item) => item.ok).length,
+    requiredTotal:Number.isFinite(source.requiredTotal) ? source.requiredTotal : requirements.length,
+  };
+};
+
+const hasDashboardSelection = () => {
+  const selection = window.getSelection && window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  const node = selection.anchorNode || selection.focusNode;
+  return Boolean(node && document.body.contains(node));
+};
+const captureRenderState = () => {
+  const active = document.activeElement;
+  const keyed = active && active.closest && active.closest('[data-focus-key]');
+  const detail = active && active.closest && active.closest('details[data-detail-id]');
+  return {
+    openDetails:new Set([...document.querySelectorAll('details[data-detail-id][open]')].map((node) => node.dataset.detailId)),
+    scrolls:new Map([...document.querySelectorAll('[data-preserve-scroll][id]')].map((node) => [node.id, node.scrollTop])),
+    focusId:active && active !== document.body ? active.id : '',
+    focusKey:keyed ? keyed.dataset.focusKey : '',
+    focusDetail:detail && active.tagName === 'SUMMARY' ? detail.dataset.detailId : '',
+    modalId:openSubmissionId,
+    modalScroll:document.querySelector('.submission-modal')?.scrollTop || 0,
+  };
+};
+const restoreRenderState = (state) => {
+  document.querySelectorAll('details[data-detail-id]').forEach((node) => {
+    node.open = state.openDetails.has(node.dataset.detailId);
+  });
+  state.scrolls.forEach((top, id) => { const node = el(id); if (node) node.scrollTop = top; });
+  let focus = state.focusId && el(state.focusId);
+  if (!focus && state.focusKey) focus = [...document.querySelectorAll('[data-focus-key]')].find((node) => node.dataset.focusKey === state.focusKey);
+  if (!focus && state.focusDetail) {
+    const details = [...document.querySelectorAll('details[data-detail-id]')].find((node) => node.dataset.detailId === state.focusDetail);
+    focus = details && details.querySelector('summary');
+  }
+  if (focus && focus.focus) focus.focus({ preventScroll:true });
+  if (state.modalId && submissionById.has(state.modalId)) {
+    openSubmission(state.modalId, null, true);
+    document.querySelector('.submission-modal').scrollTop = state.modalScroll;
+  }
+};
+
+const modalField = (label, value, options = {}) => '<div class="submission-field' + (options.wide ? ' wide' : '') + '">'
+  + '<span class="field-label">' + esc(label) + (options.source ? '<span class="field-source">' + esc(options.source) + '</span>' : '') + '</span>'
+  + (options.poc && present(value) ? '<pre class="poc">' + esc(value) + '</pre>'
+    : '<div class="field-value' + (present(value) ? '' : ' missing') + '">' + esc(present(value) ? value : 'Not recorded') + '</div>')
+  + '</div>';
+const openSubmission = (id, trigger, preserveFocus = false) => {
+  const model = submissionById.get(id);
+  if (!model) return;
+  openSubmissionId = id;
+  if (!preserveFocus) modalReturnFocus = trigger || document.activeElement;
+  const statusKind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
+  const statusLabel = model.readiness === 'ready' ? 'ready to submit' : model.readiness === 'submitted' ? 'submitted' : 'needs report work';
+  el('submission-modal-kicker').textContent = model.id + ' · Anza bounty report';
+  el('submission-modal-title').textContent = model.values.title || model.id;
+  el('submission-modal-status').innerHTML = pill(statusKind, statusLabel)
+    + (model.blockers.length ? ' <span class="blocker-count">' + model.blockers.length + ' blocker(s)</span>' : '');
+  const f = model.finding;
+  const checklist = '<ul class="checklist">' + model.requirements.map((item) => '<li><span class="'
+    + (item.ok ? 'check-ok' : 'check-missing') + '">' + (item.ok ? '✓' : '○') + '</span>' + esc(item.label) + '</li>').join('') + '</ul>';
+  const blockers = model.blockers.length ? '<ul class="blockers">' + model.blockers.map((item) => '<li>' + esc(item) + '</li>').join('') + '</ul>'
+    : '<div class="field-value">No recorded blockers.</div>';
+  el('submission-modal-body').innerHTML = '<div class="submission-fields">'
+    + modalField('Clean title', model.values.title)
+    + modalField('Readiness status', statusLabel + (f.status === 'confirmed' ? ' · peer confirmed' : ''))
+    + modalField('Summary', model.values.summary, { wide:true })
+    + modalField('Details / mechanism', model.values.details, { wide:true })
+    + modalField('PoC / reproduction', model.values.poc, { wide:true, poc:true })
+    + modalField('Impact', model.values.impact, { wide:true })
+    + modalField('Affected product', model.values.product)
+    + modalField('Affected versions', model.values.version)
+    + modalField('Severity', model.values.severity)
+    + modalField('CVSS', model.values.cvss)
+    + modalField('CWE / weakness', model.values.cwe)
+    + modalField('Target / component', f.target)
+    + modalField('Reproduced master commit', model.values.citedCommit)
+    + modalField('Current commit', model.values.currentCommit, { source:present(model.values.currentCommit) ? 'shared environment' : '' })
+    + modalField('RULES.md category', model.values.category)
+    + modalField('Current-master checked at', model.values.masterCheckedAt)
+    + modalField('Known issues checked at', model.values.knownIssuesCheckedAt)
+    + modalField('Duplicate check', model.values.duplicateCheck, { wide:true })
+    + modalField('Submission owner', model.values.owner)
+    + modalField('Confirmed by', f.confirmedBy)
+    + modalField('Finding evidence (not a substitute for report fields)', f.evidence, { wide:true })
+    + modalField('Finding reproduction (not a substitute for inline PoC)', f.repro, { wide:true, poc:true })
+    + modalField('Report reference', f.submission?.url)
+    + modalField('Submission note', f.submission?.note)
+    + '<div class="submission-field wide"><span class="field-label">Readiness checklist</span>' + checklist + '</div>'
+    + '<div class="submission-field wide"><span class="field-label">Blockers</span>' + blockers + '</div>'
+    + '</div>';
+  el('submission-modal').hidden = false;
+  document.body.style.overflow = 'hidden';
+  if (!preserveFocus) el('submission-modal-close').focus();
+};
+const closeSubmission = () => {
+  if (el('submission-modal').hidden) return;
+  el('submission-modal').hidden = true;
+  document.body.style.overflow = '';
+  openSubmissionId = null;
+  if (modalReturnFocus && modalReturnFocus.isConnected) modalReturnFocus.focus({ preventScroll:true });
+  modalReturnFocus = null;
+};
+el('submission-modal-close').addEventListener('click', closeSubmission);
+el('submission-modal').addEventListener('click', (event) => { if (event.target === el('submission-modal')) closeSubmission(); });
+el('submission-modal').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { event.preventDefault(); closeSubmission(); return; }
+  if (event.key === 'Tab') { event.preventDefault(); el('submission-modal-close').focus(); }
+});
+document.querySelector('.submissions-section').addEventListener('click', (event) => {
+  const trigger = event.target.closest('[data-submission-id]');
+  if (trigger) openSubmission(trigger.dataset.submissionId, trigger);
+});
 
 async function tick() {
   let s;
@@ -363,6 +585,11 @@ async function tick() {
   } catch {
     return goStale('Relay unreachable — it is not running, or the network dropped.');
   }
+  // Polling may continue while somebody reads/copies evidence, but replacing
+  // innerHTML would destroy their selection. Render the next fresh state only
+  // after the selection collapses.
+  if (hasDashboardSelection()) return;
+  const renderState = captureRenderState();
   document.body.classList.remove('offline');
   el('offline').innerHTML = '';
   lastGood = new Date();
@@ -390,6 +617,13 @@ async function tick() {
   const files = Object.values(s.files || {});
   const findings = s.findings || [];
   const polls = s.polls || [];
+  const submissionCandidates = Array.isArray(s.submissions) ? s.submissions
+    : findings.filter((f) => ['confirmed', 'reported'].includes(f.status));
+  const submissionModels = submissionCandidates.map((f) => buildSubmission(f, s.env || {}));
+  submissionById = new Map(submissionModels.map((model) => [String(model.id), model]));
+  const readySubmissions = submissionModels.filter((model) => model.readiness === 'ready');
+  const needsWorkSubmissions = submissionModels.filter((model) => model.readiness === 'needs_work');
+  const reportedSubmissions = submissionModels.filter((model) => model.readiness === 'submitted');
 
   // ---- goals, with progress derived from the tasks pointed at them
   const withProgress = goals.map((g) => {
@@ -408,8 +642,6 @@ async function tick() {
   const peer = reviewed.filter((f) => f.reviews.length > 1);
   const disputed = reviewed.filter((f) => new Set(f.reviews.map((r) => r.verdict)).size > 1);
   const actionableFindings = findings.filter((f) => !['confirmed', 'reported', 'rejected'].includes(f.status));
-  const readySubmissions = findings.filter((f) => f.status === 'confirmed');
-  const reportedSubmissions = findings.filter((f) => f.status === 'reported');
   const worst = ['critical','high','medium','low','info'].find((sev) => actionableFindings.some((f) => f.severity === sev));
 
   el('stats').innerHTML = [
@@ -428,7 +660,7 @@ async function tick() {
       + '<div class="sub">' + (worst ? pill(worst, 'worst: ' + worst) : 'none yet')
       + (findings.filter((f) => f.status === 'rejected').length ? ' · ' + findings.filter((f) => f.status === 'rejected').length + ' rejected' : '') + '</div></div>',
     '<div class="stat"><div class="n">' + readySubmissions.length + '</div><div class="l">ready to submit</div>'
-      + '<div class="sub">' + reportedSubmissions.length + ' already submitted</div></div>',
+      + '<div class="sub">' + needsWorkSubmissions.length + ' need report work · ' + reportedSubmissions.length + ' submitted</div></div>',
     '<div class="stat"><div class="n">' + tasks.filter((t) => t.status !== 'done').length + '</div><div class="l">tasks left</div>'
       + '<div class="sub">' + tasks.filter((t) => t.status === 'claimed').length + ' in progress</div></div>',
   ].join('');
@@ -528,26 +760,33 @@ async function tick() {
     rejectedArchiveOpen = event.currentTarget.open;
   });
 
-  const submissionCard = (f) => '<article class="submission-card">'
-    + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
-    + '<div class="work-title">' + esc(f.title) + '</div></div>'
-    + '<div class="work-meta">' + pill(f.severity, f.severity)
-    + pill(f.status === 'reported' ? 'reviewed' : 'clean', f.status === 'reported' ? 'submitted' : 'ready')
-    + (f.by ? '<span class="muted">found by ' + esc(f.by) + '</span>' : '')
-    + (f.confirmedBy ? '<span class="muted">confirmed by ' + esc(f.confirmedBy) + '</span>' : '') + '</div>'
-    + (f.target ? '<div class="path" style="margin-top:8px">' + esc(f.target) + '</div>' : '')
-    + (f.submission?.url ? '<div class="submission-copy"><b>Report:</b> ' + esc(f.submission.url) + '</div>' : '')
-    + (f.submission?.note ? '<div class="submission-copy"><b>Submission note:</b> ' + esc(f.submission.note) + '</div>' : '')
-    + '<details class="submission-detail"><summary>Evidence and reproduction</summary>'
-    + (f.evidence ? '<div class="submission-copy"><b>Evidence</b>\\n' + esc(f.evidence) + '</div>' : '')
-    + (f.repro ? '<div class="submission-copy"><b>Reproduction</b>\\n' + esc(f.repro) + '</div>' : '')
-    + (!f.evidence && !f.repro ? empty('No evidence text recorded.') : '') + '</details></article>';
-  const readySorted = bySeverity(readySubmissions);
-  const reportedSorted = bySeverity(reportedSubmissions);
+  const submissionCard = (model) => {
+    const f = model.finding;
+    const kind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
+    const label = model.readiness === 'ready' ? 'ready' : model.readiness === 'submitted' ? 'submitted' : 'blocked';
+    return '<button type="button" class="submission-card" data-submission-id="' + esc(model.id)
+      + '" data-focus-key="submission-' + esc(model.id) + '">'
+      + '<div class="work-head"><code class="muted work-id">' + esc(model.id) + '</code>'
+      + '<div class="work-title">' + esc(model.values.title || f.title) + '</div></div>'
+      + '<div class="work-meta">' + pill(model.values.severity, model.values.severity)
+      + pill(kind, label)
+      + '<span class="muted">' + model.requiredComplete + '/' + model.requiredTotal + ' required checks</span></div>'
+      + (model.values.summary ? '<span class="submission-summary-copy">' + esc(model.values.summary) + '</span>' : '')
+      + (model.blockers.length ? '<span class="blocker-count">' + model.blockers.length + ' blocker(s) · open for details</span>' : '')
+      + '</button>';
+  };
+  const submissionSeverity = (model) => SEV[model.values.severity] ?? 9;
+  const sortSubmissions = (list) => [...list].sort((a, b) =>
+    submissionSeverity(a) - submissionSeverity(b) || String(a.id).localeCompare(String(b.id), undefined, { numeric:true }));
+  const readySorted = sortSubmissions(readySubmissions);
+  const needsWorkSorted = sortSubmissions(needsWorkSubmissions);
+  const reportedSorted = sortSubmissions(reportedSubmissions);
   el('ready-count').textContent = readySorted.length;
+  el('needs-work-count').textContent = needsWorkSorted.length;
   el('reported-count').textContent = reportedSorted.length;
-  el('submission-summary').textContent = readySorted.length + ' ready · ' + reportedSorted.length + ' submitted';
-  el('submissions-ready').innerHTML = readySorted.length ? readySorted.map(submissionCard).join('') : empty('No confirmed findings waiting to be filed.');
+  el('submission-summary').textContent = readySorted.length + ' ready · ' + needsWorkSorted.length + ' blocked · ' + reportedSorted.length + ' submitted';
+  el('submissions-ready').innerHTML = readySorted.length ? readySorted.map(submissionCard).join('') : empty('No submission is ready.');
+  el('submissions-needs-work').innerHTML = needsWorkSorted.length ? needsWorkSorted.map(submissionCard).join('') : empty('No blocked candidates.');
   el('submissions-reported').innerHTML = reportedSorted.length ? reportedSorted.map(submissionCard).join('') : empty('No findings marked reported yet.');
 
   const pollRow = (p) => {
@@ -652,6 +891,7 @@ async function tick() {
         + th.replies.map((r) => '<div class="row">' + msgRow(r) + '</div>').join('')
         + '</div>').join('')
     : '<div class="empty">nothing yet</div>';
+  restoreRenderState(renderState);
 }
 let lastGood = null;
 function goStale(why) {

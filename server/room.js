@@ -984,6 +984,69 @@ export class Room {
     return finding;
   }
 
+  submissionReadiness(finding) {
+    const submission = finding.submission || {};
+    const blockers = [];
+    const requireText = (key, label) => {
+      if (!String(submission[key] || '').trim()) blockers.push(label);
+    };
+    const requireGate = (key, label) => {
+      if (submission[key] !== true) blockers.push(label);
+    };
+
+    requireText('title', 'clean report title');
+    requireText('summary', 'Summary');
+    requireText('details', 'Details / vulnerability mechanism');
+    requireText('poc', 'complete inline PoC and reproduction');
+    requireText('impact', 'Impact');
+    requireText('commit', 'exact agave/master commit reproduced');
+    requireText('category', 'RULES.md impact category');
+    requireText('owner', 'human submission owner');
+    requireText('masterCheckedAt', 'current-master check timestamp');
+    requireText('knownIssuesCheckedAt', 'known/public-issue check timestamp');
+    requireGate('liveOnMaster', 'confirmed live on current master');
+    requireGate('inlinePoc', 'PoC is self-contained and inline');
+    requireGate('impactDemonstrated', 'PoC demonstrates the claimed impact');
+    requireGate('knownIssuesChecked', 'known/public issues checked');
+    requireGate('oneFinding', 'one finding per advisory');
+    requireGate('confidential', 'private/confidential handling confirmed');
+    requireGate('twoFactorVerified', 'human owner GitHub 2FA verified');
+    requireGate('windowVerified', 'submission window verified at filing time');
+
+    return {
+      state: finding.status === 'reported' ? 'reported' : blockers.length ? 'blocked' : 'ready',
+      ready: finding.status === 'reported' || blockers.length === 0,
+      blockers,
+      requiredComplete: 18 - blockers.length,
+      requiredTotal: 18,
+    };
+  }
+
+  updateSubmission(agent, id, patch = {}) {
+    const finding = this.state.findings.find((f) => f.id === id);
+    if (!finding) return { ok: false, error: `No finding ${id}.` };
+    if (!['confirmed', 'reported'].includes(finding.status)) {
+      return { ok: false, error: `${id} must be independently confirmed before submission work is recorded.` };
+    }
+    const allowed = [
+      'title', 'summary', 'details', 'poc', 'impact', 'ecosystem', 'packageName',
+      'affectedVersions', 'patchedVersions', 'severity', 'cvss', 'cwe', 'commit',
+      'category', 'owner', 'duplicateCheck', 'masterCheckedAt', 'knownIssuesCheckedAt',
+      'liveOnMaster', 'inlinePoc', 'impactDemonstrated', 'knownIssuesChecked',
+      'oneFinding', 'confidential', 'twoFactorVerified', 'windowVerified',
+    ];
+    const next = { ...(finding.submission || {}) };
+    for (const key of allowed) {
+      if (patch[key] !== undefined) next[key] = patch[key];
+    }
+    next.updatedBy = agent;
+    next.updatedAt = nowIso();
+    finding.submission = next;
+    this.touch(agent);
+    this.save();
+    return { ok: true, finding, readiness: this.submissionReadiness(finding) };
+  }
+
   updateFinding(agent, id, { status, note, submissionUrl = '', submissionNote = '' }) {
     const finding = this.state.findings.find((f) => f.id === id);
     if (!finding) return { ok: false, error: `No finding ${id}.` };
@@ -993,6 +1056,26 @@ export class Room {
     if (status === 'reported' && !['confirmed', 'reported'].includes(finding.status)) {
       return { ok: false, error: `${id} must be confirmed before it can be marked reported.` };
     }
+    const submissionMetadata = submissionUrl || submissionNote
+      ? {
+          ...(finding.submission || {}),
+          ...(submissionUrl ? { url: submissionUrl } : {}),
+          ...(submissionNote ? { note: submissionNote } : {}),
+          updatedBy: agent,
+          updatedAt: nowIso(),
+        }
+      : finding.submission;
+    if (status === 'reported') {
+      const readiness = this.submissionReadiness({ ...finding, submission: submissionMetadata });
+      if (!readiness.ready) {
+        return {
+          ok: false,
+          error: `${id} is not submission-ready: ${readiness.blockers.join('; ')}.`,
+          readiness,
+        };
+      }
+    }
+    if (submissionMetadata !== finding.submission) finding.submission = submissionMetadata;
     if (status && status !== finding.status) {
       finding.history ||= [];
       finding.history.push({ ts: nowIso(), who: agent, from: finding.status, to: status });
@@ -1007,11 +1090,9 @@ export class Room {
       }
     }
     if (note) finding.evidence = finding.evidence ? `${finding.evidence}\n[${agent}] ${note}` : `[${agent}] ${note}`;
-    if (submissionUrl || submissionNote || status === 'reported') {
+    if (status === 'reported') {
       finding.submission = {
         ...(finding.submission || {}),
-        ...(submissionUrl ? { url: submissionUrl } : {}),
-        ...(submissionNote ? { note: submissionNote } : {}),
         by: agent,
         ts: nowIso(),
       };
@@ -1025,7 +1106,8 @@ export class Room {
     return this.state.findings
       .filter((finding) => ['confirmed', 'reported'].includes(finding.status))
       .sort((a, b) => (severity[a.severity] ?? 9) - (severity[b.severity] ?? 9)
-        || String(b.reportedAt || b.confirmedAt || b.ts || '').localeCompare(String(a.reportedAt || a.confirmedAt || a.ts || '')));
+        || String(b.reportedAt || b.confirmedAt || b.ts || '').localeCompare(String(a.reportedAt || a.confirmedAt || a.ts || '')))
+      .map((finding) => ({ ...finding, readiness: this.submissionReadiness(finding) }));
   }
 
   // ----------------------------------------------------------------- goals
