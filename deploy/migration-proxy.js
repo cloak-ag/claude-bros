@@ -141,7 +141,9 @@ if (invoked) {
   const canonicalUrl = process.env.BROS_MIGRATE_TO;
   const oldToken = process.env.BROS_OLD_TOKEN;
   const newToken = process.env.BROS_NEW_TOKEN;
-  const host = process.env.BROS_MIGRATE_HOST || '192.168.15.20';
+  // Loopback is the safe default. A legacy relay operator may opt into a
+  // network listener explicitly after applying host-level firewall rules.
+  const host = process.env.BROS_MIGRATE_HOST || '127.0.0.1';
   const port = Number(process.env.BROS_MIGRATE_PORT || 7777);
   const server = createMigrationProxy({ canonicalUrl, oldToken, newToken });
   server.listen(port, host, () => {
