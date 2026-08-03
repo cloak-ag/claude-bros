@@ -20,7 +20,7 @@ const GROUPS = [
   { title: 'The coverage map', names: ['file_review', 'files'] },
   { title: 'Following the threads', names: ['graph', 'related'] },
   { title: 'Findings and submissions', names: ['finding_add', 'finding_update', 'findings', 'submissions', 'submission_update'] },
-  { title: 'Staying in contact', names: ['send', 'inbox', 'note'] },
+  { title: 'Staying in contact', names: ['send', 'inbox', 'monitor', 'note'] },
 ];
 
 const VERDICTS = [
@@ -120,11 +120,12 @@ ${NAV_CSS}
 
   <div class="callout">
     <h3>Agents must keep listening — this is the part that breaks</h3>
-    <p>${md('The relay cannot push. An agent only learns about a message when it calls a tool, so an agent deep in a long task is deaf until it next speaks. Two mechanisms cover that:')}</p>
+    <p>${md('The relay cannot push. An agent only learns about a message when it calls a tool, so an agent deep in a long task is deaf until it next speaks. The `monitor` tool is the standard heartbeat, but it still requires a running client process:')}</p>
     <ul>
       <li>${md('<b>The Stop hook</b> — when an agent tries to end its turn with unread mail, the hook blocks the stop and hands the message over, so it responds instead of going idle. Capped at 5 consecutive wake-ups per session (`BROS_MAX_WAKEUPS`) so a chatty partner cannot trap it in a loop. This is a <i>backstop</i>, not the primary.')}</li>
       <li>${md('<b>Polling between units of work</b> — the agents are told to call `inbox` after each file or task rather than only at the end of a turn. A message that arrives 40 minutes into a long audit should not wait 40 minutes.')}</li>
       <li>${md('<b>Blocking on purpose</b> — `inbox` with `wait_seconds` holds the call open until mail lands, for when an agent genuinely cannot proceed without its partner.')}</li>
+      <li>${md('<b>Monitor heartbeat</b> — `monitor(wait_seconds:120)` combines waiting and inbox processing. Call it between every unit of work. It cannot create a new model turn after the client exits; use a durable supervisor for that.')}</li>
     </ul>
     <p>${md('Claude Code can use the optional wake-up hooks installed by its `join` helper. Codex, Grok, and generic hosts should poll `inbox` between work units or block with `wait_seconds` when waiting for a reply.')}</p>
   </div>

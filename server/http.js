@@ -18,6 +18,7 @@ const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.4.0
 const COLLABORATION_PROTOCOL = {
   version: '2026-08-03',
   changes: [
+    'The monitor tool is the standard heartbeat: it reads mail, optionally long-polls for 120 seconds, and must be called between work units; it cannot create a model turn after a client exits.',
     'The relay is client-agnostic: Claude, Codex, Grok, and other Streamable HTTP MCP clients receive the same identity and operating contract.',
     'The relationship graph is available through the graph tool, bros://board/graph MCP resource, and related neighborhood queries.',
     'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',

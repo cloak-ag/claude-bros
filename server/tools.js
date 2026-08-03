@@ -7,6 +7,9 @@
 import { buildGraph, relatedTo } from './graph.js';
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
+const MONITOR_PROTOCOL = '2026-08-03-monitor-v1';
+const MONITOR_UPDATE =
+  'PROTOCOL UPDATE: use `monitor` as the collaboration heartbeat. Call it after each completed file/task and at the end of every work cycle; use wait_seconds=120 for a persistent worker. It reads mail and long-polls, but cannot create a model turn after your client exits. Act on every message before continuing.';
 
 export const TOOL_DEFS = [
   {
@@ -64,6 +67,21 @@ export const TOOL_DEFS = [
         wait_seconds: {
           type: 'number',
           description: 'Block up to this many seconds waiting for new mail (0-120). Default 0 = return immediately.',
+        },
+      },
+    },
+  },
+  {
+    name: 'monitor',
+    title: 'Stay active and listen for work',
+    description:
+      'Run the collaboration heartbeat: read unread mail, optionally wait for new messages for up to 120 seconds, and return the next-listening instruction. Call this after each completed file/task and at the end of every work cycle. This does not create a model turn; the client process must remain alive to call it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        wait_seconds: {
+          type: 'number',
+          description: 'Block up to this many seconds waiting for new mail (0-120). Default 120 for a durable worker.',
         },
       },
     },
@@ -603,6 +621,8 @@ function briefing(room, agent) {
   L.push('         Nothing gets submitted on one agent\'s say-so.');
   L.push('TALK   → status when you switch tasks. send for anything that changes what your partner');
   L.push('         should do next. inbox(wait_seconds) when you are genuinely blocked on them.');
+  L.push('MONITOR → call `monitor(wait_seconds:120)` after every work unit and at the end of each cycle.');
+  L.push('          It keeps a live client listening; it cannot wake a client process that has exited.');
   L.push('POLLS  → poll_create for shared decisions and stale-work reassignment; polls → poll_vote.');
   L.push('         Do not silently steal work or erase an agent. A passed poll moves the claim while');
   L.push('         preserving the previous agent\'s task history and completed contributions.');
@@ -675,6 +695,7 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
    * carries a nag until it calls `join` — which is the one thing that clears it.
    */
   const unbriefed = agent && name !== 'join' && !room.state.agents[agent]?.briefedAt;
+  const needsMonitorUpdate = agent && name !== 'join' && room.state.agents[agent]?.protocolSeen !== MONITOR_PROTOCOL;
   const staleStatus = agent && name !== 'status' && name !== 'join' && room.statusStale(agent);
   const withNag = (result) => {
     if (moderationTool) return result;
@@ -693,6 +714,9 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       result.content[0].text =
         `[decision] Your vote is still needed on ${openDecisions.map((poll) => poll.id).join(', ')}. Call polls, read the reason/action, and vote.\n\n` +
         result.content[0].text;
+    }
+    if (needsMonitorUpdate && !['monitor', 'join'].includes(name)) {
+      result.content[0].text = MONITOR_UPDATE + '\n\n' + result.content[0].text;
     }
     if (staleStatus && !unbriefed) {
       // Seconds-granular liveness so the agent can see exactly how long it has
@@ -730,6 +754,7 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
     case 'join': {
       const joined = room.join(agent, { host });
       if (!joined.ok) return fail(joined.error);
+      if (room.state.agents[agent]) room.state.agents[agent].protocolSeen = MONITOR_PROTOCOL;
       if (room.state.agents[agent]) room.state.agents[agent].boardAt = Date.now();
       return text(`${briefing(room, agent)}${renderBoard(room.board(agent))}`);
     }
@@ -789,6 +814,17 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       if (waitSeconds > 0) await room.waitForMail(agent, waitSeconds * 1000);
       const messages = room.readInbox(agent);
       return text(renderInbox(messages, waitSeconds > 0));
+    }
+
+    case 'monitor': {
+      const waitSeconds = args.wait_seconds === undefined ? 120 : Math.min(Math.max(Number(args.wait_seconds) || 0, 0), 120);
+      if (waitSeconds > 0) await room.waitForMail(agent, waitSeconds * 1000);
+      const messages = room.readInbox(agent);
+      if (room.state.agents[agent]) room.state.agents[agent].protocolSeen = '2026-08-03-monitor-v1';
+      return text(
+        'MONITOR CYCLE COMPLETE. This is a long-poll heartbeat, not a model wake-up. Keep the client process alive and call `monitor` again after the next work unit. Act on every message before continuing your own plan.\n\n' +
+        renderInbox(messages, waitSeconds > 0),
+      );
     }
 
     case 'task_add': {

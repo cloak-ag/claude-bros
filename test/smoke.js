@@ -55,19 +55,20 @@ check('initialize records client implementation without making it a role',
   room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 26, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 27, `got ${tools.result.tools.length}`);
 const humanToolsRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
 });
 const humanTools = await humanToolsRes.json();
 check('only the human credential discovers message moderation tools',
-  humanTools.result.tools.length === 28
+  humanTools.result.tools.length === 29
     && ['message_edit', 'message_delete'].every((name) => humanTools.result.tools.some((tool) => tool.name === name))
     && !tools.result.tools.some((tool) => tool.name.startsWith('message_')));
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
 check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
   .every((name) => tools.result.tools.some((tool) => tool.name === name)));
+check('monitor heartbeat is discoverable', tools.result.tools.some((tool) => tool.name === 'monitor'));
 const resources = await rpc('alpha', 'resources/list');
 check('MCP advertises graph, capability, and connection resources',
   ['bros://board/graph', 'bros://server/capabilities', 'bros://server/connecting']
@@ -132,6 +133,9 @@ check('same-origin browser MCP requests remain valid', sameOrigin.status === 200
 
 console.log('\n  two agents');
 await call('alpha', 'join');
+const monitorHeartbeat = await call('alpha', 'monitor', { wait_seconds: 0 });
+check('monitor heartbeat reads mail and teaches the next cycle',
+  monitorHeartbeat.text.includes('MONITOR CYCLE COMPLETE') && room.state.agents.alpha.protocolSeen === '2026-08-03-monitor-v1');
 await call('beta', 'join');
 const board = await call('alpha', 'board');
 check('alpha sees beta on the board', board.text.includes('beta') && board.text.includes('available'));
