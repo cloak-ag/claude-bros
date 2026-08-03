@@ -273,6 +273,17 @@ const submissionDraft = await call('beta', 'submission_update', {
 });
 check('complete Anza fields move a candidate to ready',
   submissionDraft.text.includes('"state": "ready"') && submissionDraft.text.includes('"complete": "18/18"'));
+await call('beta', 'finding_add', {
+  title: 'Second candidate still missing report gates',
+  severity: 'critical',
+  target: '/ranked-readiness',
+  evidence: 'A separate reproducible candidate intentionally remains incomplete for queue ordering.',
+});
+await call('alpha', 'finding_update', { id: 'F2', status: 'confirmed', note: 'independently reproduced for ordering test' });
+const rankedText = (await call('beta', 'submissions')).text;
+const rankedSubmissions = JSON.parse(rankedText.slice(rankedText.lastIndexOf('\n[') + 1));
+check('MCP submissions are ranked by readiness, not severity',
+  rankedSubmissions[0]?.id === 'F1' && rankedSubmissions[1]?.id === 'F2');
 await call('alpha', 'finding_update', {
   id: 'F1', status: 'reported', submission_url: 'https://reports.example/F1',
   submission_note: 'Filed with the program',
@@ -282,6 +293,7 @@ check('reported findings retain submission metadata',
   reported.text.includes('https://reports.example/F1') && reported.text.includes('Filed with the program'));
 
 console.log('\n  finding → task auto-link');
+const xssFindingBefore = room.state.findings.length;
 await call('beta', 'finding_add', {
   title: 'Stored XSS in the dashboard',
   severity: 'high',
@@ -289,11 +301,12 @@ await call('beta', 'finding_add', {
   evidence: 'agent message text is injected unescaped',
   creates_task: true,
 });
-const linkTask = room.state.tasks.find((t) => t.title.includes('Verify F2'));
+const xssFinding = room.state.findings[xssFindingBefore];
+const linkTask = room.state.tasks.find((t) => t.title.includes(`Verify ${xssFinding.id}`));
 check('a finding with creates_task spawns a verification task', Boolean(linkTask), JSON.stringify(room.state.tasks));
 check('the verification task is assigned to the partner, not the reporter',
   linkTask?.owner === 'alpha', `owner=${linkTask?.owner}`);
-check('the finding records its verification task', room.state.findings.find((f) => f.id === 'F2')?.verificationTask === linkTask?.id);
+check('the finding records its verification task', xssFinding?.verificationTask === linkTask?.id);
 
 console.log('\n  board search');
 const searchHit = await (await fetch(`${base}/api/search?q=idor&token=${TOKEN}`)).json();
