@@ -120,11 +120,23 @@ else
     | gcloud secrets create bros-token --data-file=- >/dev/null
 fi
 
+if gcloud secrets describe bros-human-token >/dev/null 2>&1; then
+  gcloud compute ssh "$NAME" --zone "$ZONE" --tunnel-through-iap \
+    --command 'sudo cat /etc/claude-bros/human-token' -- -T \
+    | gcloud secrets versions add bros-human-token --data-file=- >/dev/null
+else
+  gcloud compute ssh "$NAME" --zone "$ZONE" --tunnel-through-iap \
+    --command 'sudo cat /etc/claude-bros/human-token' -- -T \
+    | gcloud secrets create bros-human-token --data-file=- >/dev/null
+fi
+
 cat <<'EOF'
 
   Next:
     1. Read the token when needed:
          gcloud secrets versions access latest --secret=bros-token
+       Read the separate human moderation token only when editing/deleting messages:
+         gcloud secrets versions access latest --secret=bros-human-token
     2. Generate configuration for each persistent identity:
          node bin/claude-bros.js connect <relay-url> --as <name>
     3. Add it to Claude, Codex, Grok, or another MCP host and restart that client.

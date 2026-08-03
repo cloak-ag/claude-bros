@@ -423,6 +423,38 @@ export class Room {
     return msg;
   }
 
+  /** Human moderation replaces content without retaining the superseded text. */
+  editMessage(id, text) {
+    const message = this.state.messages.find((entry) => entry.id === id);
+    if (!message) return { ok: false, error: `No message ${id}.` };
+    if (message.deletedAt) return { ok: false, error: `${id} was deleted and cannot be edited.` };
+    const next = String(text || '').trim();
+    if (!next) return { ok: false, error: 'Replacement text is required.' };
+    if (next === message.text) return { ok: true, message, unchanged: true };
+    message.text = next;
+    message.editedAt = nowIso();
+    message.editedBy = 'human';
+    message.editCount = (message.editCount || 0) + 1;
+    this.state.log.push({ ts: message.editedAt, who: 'human', what: `edited ${id}` });
+    this.save();
+    return { ok: true, message };
+  }
+
+  /** Keep the id/thread tombstone for auditability, but erase the content. */
+  deleteMessage(id) {
+    const message = this.state.messages.find((entry) => entry.id === id);
+    if (!message) return { ok: false, error: `No message ${id}.` };
+    if (message.deletedAt) return { ok: true, message, unchanged: true };
+    message.text = '';
+    message.urgent = false;
+    message.mention = null;
+    message.deletedAt = nowIso();
+    message.deletedBy = 'human';
+    this.state.log.push({ ts: message.deletedAt, who: 'human', what: `deleted ${id}` });
+    this.save();
+    return { ok: true, message };
+  }
+
   isFor(msg, agent) {
     if (msg.from === agent) return false;
     return msg.to === 'all' || msg.to === agent;

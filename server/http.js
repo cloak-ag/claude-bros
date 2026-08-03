@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { TOOL_DEFS, callTool } from './tools.js';
+import { TOOL_DEFS, toolDefsFor, callTool } from './tools.js';
 import { dashboardHtml } from './dashboard.js';
 import { helpHtml } from './help.js';
 import { graphHtml } from './graphpage.js';
@@ -14,7 +14,7 @@ import { buildGraph } from './graph.js';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26'];
-const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.3.0' };
+const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.4.0' };
 const COLLABORATION_PROTOCOL = {
   version: '2026-08-03',
   changes: [
@@ -25,6 +25,7 @@ const COLLABORATION_PROTOCOL = {
     'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
     'Confirmed findings move to the submissions tool and dashboard queue; reported findings retain filing metadata.',
     'After sustained inactivity the relay opens a deduplicated agent_kick poll for active teammates to decide; it never auto-passes removal.',
+    'A separate human moderation credential exposes message_edit and message_delete; ordinary agent credentials cannot see or call them.',
   ],
 };
 
@@ -138,7 +139,7 @@ function readBody(req, limit = 4 * 1024 * 1024) {
   });
 }
 
-async function handleRpc(room, agent, message, host = null) {
+async function handleRpc(room, agent, message, host = null, human = false) {
   const { id, method, params } = message;
   const isNotification = id === undefined;
   const ok = (result) => (isNotification ? null : { jsonrpc: '2.0', id, result });
@@ -201,12 +202,12 @@ async function handleRpc(room, agent, message, host = null) {
       return ok({});
 
     case 'tools/list':
-      return ok({ tools: TOOL_DEFS });
+      return ok({ tools: toolDefsFor(human) });
 
     case 'tools/call': {
       const name = params?.name;
       try {
-        const result = await callTool(room, agent, name, params?.arguments || {}, host);
+        const result = await callTool(room, agent, name, params?.arguments || {}, host, { human });
         return ok(result);
       } catch (err) {
         console.error(`[bros] tool ${name} threw:`, err);
@@ -262,7 +263,7 @@ async function handleRpc(room, agent, message, host = null) {
   }
 }
 
-export function createServer({ room, token, quiet = false }) {
+export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_TOKEN || null, quiet = false }) {
   const seen = new Set();
 
   // Every address belonging to this box counts as one place, so the agent
@@ -294,16 +295,30 @@ export function createServer({ room, token, quiet = false }) {
     if (detail) console.log(`\x1b[2m  ${stamp}  ${agent || '?'}  ${detail}\x1b[0m`);
   };
 
+  const credentials = (url, req) => [
+    url.searchParams.get('token'),
+    (req.headers.authorization || '').replace(/^Bearer\s+/i, ''),
+    req.headers['x-bros-token'],
+    req.headers['x-bros-human-token'],
+  ].filter((value) => typeof value === 'string' && value.length);
+  const matches = (candidate, expected) => {
+    if (!candidate || !expected) return false;
+    const left = Buffer.from(candidate);
+    const right = Buffer.from(expected);
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  };
+  const humanAuthorized = (url, req) => Boolean(humanToken && humanToken !== token
+    && credentials(url, req).some((candidate) => matches(candidate, humanToken)));
   const authorized = (url, req) => {
     if (!token) return true;
-    const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    return url.searchParams.get('token') === token || bearer === token || req.headers['x-bros-token'] === token;
+    return humanAuthorized(url, req) || credentials(url, req).some((candidate) => matches(candidate, token));
   };
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const requestedAgent = url.searchParams.get('agent') || req.headers['x-bros-agent'] || null;
     const agent = requestedAgent ? room.resolveName(requestedAgent) : null;
+    const isHuman = humanAuthorized(url, req);
     if (agent && agent !== requestedAgent && !seen.has(`alias:${requestedAgent}`)) {
       seen.add(`alias:${requestedAgent}`);
       if (!quiet) {
@@ -414,7 +429,7 @@ export function createServer({ room, token, quiet = false }) {
           continue;
         }
         log(req, agent, message.method === 'tools/call' ? `tool: ${message.params?.name}` : message.method);
-        const reply = await handleRpc(room, agent, message, hostOf(req));
+        const reply = await handleRpc(room, agent, message, hostOf(req), isHuman);
         if (reply) replies.push(reply);
       }
 
@@ -436,6 +451,7 @@ export function createServer({ room, token, quiet = false }) {
     if (url.pathname === '/api/graph') return cachedJson(req, res, buildGraph(room.state), room.version, 'graph');
     if (url.pathname === '/api/board') return cachedJson(req, res, room.board(agent), room.version, `board-${agent || '-'}`);
     if (url.pathname === '/api/state') return cachedJson(req, res, room.state, room.version, 'state');
+    if (url.pathname === '/api/auth') return json(res, 200, { human: isHuman });
 
     if (url.pathname === '/api/unread') {
       if (!agent) return json(res, 400, { error: 'agent required' });
@@ -449,8 +465,9 @@ export function createServer({ room, token, quiet = false }) {
     // an agent that joined mid-session has no other way to reach the board.
     if (url.pathname.startsWith('/api/tool/')) {
       const name = decodeURIComponent(url.pathname.slice('/api/tool/'.length));
-      if (!TOOL_DEFS.some((t) => t.name === name)) {
-        return json(res, 404, { ok: false, error: `No tool "${name}".`, tools: TOOL_DEFS.map((t) => t.name) });
+      const availableTools = toolDefsFor(isHuman);
+      if (!availableTools.some((t) => t.name === name)) {
+        return json(res, 404, { ok: false, error: `No available tool "${name}".`, tools: availableTools.map((t) => t.name) });
       }
       let args = {};
       if (req.method === 'POST') {
@@ -465,7 +482,7 @@ export function createServer({ room, token, quiet = false }) {
       }
       log(req, agent, `tool(rest): ${name}`);
       try {
-        const result = await callTool(room, agent, name, args, hostOf(req));
+        const result = await callTool(room, agent, name, args, hostOf(req), { human: isHuman });
         const out = result.content?.[0]?.text ?? '';
         if (url.searchParams.get('format') === 'json') {
           return json(res, result.isError ? 400 : 200, { ok: !result.isError, tool: name, text: out });
@@ -478,7 +495,7 @@ export function createServer({ room, token, quiet = false }) {
     }
 
     if (url.pathname === '/api/tools') {
-      return json(res, 200, TOOL_DEFS.map((t) => ({ name: t.name, title: t.title, params: Object.keys(t.inputSchema?.properties || {}) })));
+      return json(res, 200, toolDefsFor(isHuman).map((t) => ({ name: t.name, title: t.title, params: Object.keys(t.inputSchema?.properties || {}) })));
     }
 
     // Catch-up after a relay blip: everything the client has not seen by seq.
@@ -486,6 +503,19 @@ export function createServer({ room, token, quiet = false }) {
       const since = Number(url.searchParams.get('since') || 0);
       const list = room.state.messages.filter((m) => (m.seq || 0) > since);
       return json(res, 200, { latestSeq: room.state.counters.seq || 0, count: list.length, messages: list });
+    }
+
+    const messageRoute = url.pathname.match(/^\/api\/messages\/(M\d+)$/);
+    if (messageRoute && ['PATCH', 'DELETE'].includes(req.method)) {
+      if (!isHuman) return json(res, 403, { ok: false, error: 'Human moderation authorization is required.' });
+      try {
+        const result = req.method === 'DELETE'
+          ? room.deleteMessage(messageRoute[1])
+          : room.editMessage(messageRoute[1], JSON.parse(await readBody(req)).text);
+        return json(res, result.ok ? 200 : 400, result);
+      } catch (err) {
+        return json(res, 400, { ok: false, error: err.message });
+      }
     }
 
     if (url.pathname === '/api/rename' && req.method === 'POST') {
@@ -555,7 +585,12 @@ export function createServer({ room, token, quiet = false }) {
       try {
         const body = JSON.parse(await readBody(req));
         if (!body.text) return json(res, 400, { error: 'text required' });
-        const msg = room.send(body.from || agent || 'human', {
+        const from = body.from || agent || (isHuman ? 'human' : null);
+        if (!from) return json(res, 400, { error: 'agent required' });
+        if (from !== agent && !(isHuman && from === 'human')) {
+          return json(res, 403, { error: 'A sender may not impersonate another identity.' });
+        }
+        const msg = room.send(from, {
           to: body.to || 'all',
           text: body.text,
           urgent: body.urgent,
@@ -595,19 +630,22 @@ export function createServer({ room, token, quiet = false }) {
     }
 
     if (url.pathname === '/graph') {
-      const html = graphHtml(room.name, token ? `?token=${encodeURIComponent(token)}` : '');
+      const supplied = credentials(url, req)[0];
+      const html = graphHtml(room.name, supplied ? `?token=${encodeURIComponent(supplied)}` : '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html), 'Cache-Control': 'no-store' });
       return res.end(html);
     }
 
     if (url.pathname === '/help') {
-      const html = helpHtml(room.name, TOOL_DEFS, token ? `?token=${encodeURIComponent(token)}` : '');
+      const supplied = credentials(url, req)[0];
+      const html = helpHtml(room.name, toolDefsFor(isHuman), supplied ? `?token=${encodeURIComponent(supplied)}` : '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html), 'Cache-Control': 'no-store' });
       return res.end(html);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      const html = dashboardHtml(room.name, token ? `?token=${encodeURIComponent(token)}` : '');
+      const supplied = credentials(url, req)[0];
+      const html = dashboardHtml(room.name, supplied ? `?token=${encodeURIComponent(supplied)}` : '');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html), 'Cache-Control': 'no-store' });
       return res.end(html);
     }

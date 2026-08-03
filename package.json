@@ -1,6 +1,6 @@
 {
   "name": "claude-bros",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A client-agnostic MCP relay where Claude, Codex, Grok, and other agents collaborate through a shared board.",
   "type": "module",
   "bin": {

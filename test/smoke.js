@@ -6,6 +6,7 @@ import { Room } from '../server/room.js';
 import { createServer } from '../server/http.js';
 
 const TOKEN = 'testtoken';
+const HUMAN_TOKEN = 'human-test-token';
 let passed = 0;
 let failed = 0;
 
@@ -20,7 +21,7 @@ const check = (label, condition, detail = '') => {
 };
 
 const room = new Room({ name: 'test', file: null });
-const server = createServer({ room, token: TOKEN, quiet: true });
+const server = createServer({ room, token: TOKEN, humanToken: HUMAN_TOKEN, quiet: true });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -55,6 +56,15 @@ check('initialize records client implementation without making it a role',
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
 check('tools/list exposes the full surface', tools.result.tools.length === 25, `got ${tools.result.tools.length}`);
+const humanToolsRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+});
+const humanTools = await humanToolsRes.json();
+check('only the human credential discovers message moderation tools',
+  humanTools.result.tools.length === 27
+    && ['message_edit', 'message_delete'].every((name) => humanTools.result.tools.some((tool) => tool.name === name))
+    && !tools.result.tools.some((tool) => tool.name.startsWith('message_')));
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
 check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
   .every((name) => tools.result.tools.some((tool) => tool.name === name)));
@@ -171,6 +181,39 @@ await call('alpha', 'send', { text: 'check @ghost-agent in scope' });
 const ghostMention = room.state.messages[room.state.messages.length - 1];
 check('@mention of an unknown name is not marked urgent', ghostMention.urgent === false && ghostMention.mention === null);
 
+const moderationTarget = (await call('beta', 'send', { text: 'draft wording', to: 'alpha' })).text.match(/M\d+/)[0];
+const deniedEdit = await fetch(`${base}/api/messages/${moderationTarget}?token=${TOKEN}`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'agent tamper' }),
+});
+check('the shared agent credential cannot edit messages', deniedEdit.status === 403);
+const editedMessage = await fetch(`${base}/api/messages/${moderationTarget}?token=${HUMAN_TOKEN}`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'approved wording' }),
+});
+check('the human credential edits without retaining superseded content',
+  editedMessage.status === 200
+    && room.state.messages.find((m) => m.id === moderationTarget)?.text === 'approved wording'
+    && room.state.messages.find((m) => m.id === moderationTarget)?.editedBy === 'human');
+const moderatedInbox = await call('alpha', 'inbox');
+check('agents see the edited marker and replacement text',
+  moderatedInbox.text.includes('edited by human') && moderatedInbox.text.includes('approved wording'));
+const deletedMessage = await fetch(`${base}/api/messages/${moderationTarget}`, {
+  method: 'DELETE', headers: { 'X-Bros-Human-Token': HUMAN_TOKEN },
+});
+const tombstone = room.state.messages.find((m) => m.id === moderationTarget);
+check('human deletion erases content but retains an audited tombstone',
+  deletedMessage.status === 200 && tombstone?.text === '' && tombstone?.deletedBy === 'human' && tombstone?.id === moderationTarget);
+const deniedTool = await call('alpha', 'message_delete', { id: mentioned.id });
+check('ordinary agents cannot invoke a hidden moderation tool directly',
+  deniedTool.isError && deniedTool.text.includes('Human moderation authorization'));
+const humanDeleteToolRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call',
+    params: { name: 'message_delete', arguments: { id: ghostMention.id } } }),
+});
+const humanDeleteTool = await humanDeleteToolRes.json();
+check('human MCP moderation works without creating a phantom operator agent',
+  humanDeleteTool.result.content[0].text.includes(`Deleted ${ghostMention.id}`) && !room.state.agents.operator);
+
 console.log('\n  long-polling inbox');
 const started = Date.now();
 const waiting = call('alpha', 'inbox', { wait_seconds: 10 });
@@ -272,7 +315,7 @@ check('with no goals it says to propose them', fresh.text.includes('NO GOALS yet
 check('the full board follows the briefing', fresh.text.includes('# Board:'));
 
 check('a human posting via REST does not join the roster', await (async () => {
-  await fetch(`${base}/api/send?token=${TOKEN}`, {
+  await fetch(`${base}/api/send?token=${HUMAN_TOKEN}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ from: 'human', to: 'alpha', text: 'nudge from the human' }),
   });
@@ -825,7 +868,11 @@ fsMod.mkdirSync(pathMod.join(sendHome, '.claude-bros'), { recursive: true });
 fsMod.writeFileSync(pathMod.join(sendHome, '.claude-bros', 'config.json'), JSON.stringify({
   url: base, agent: 'clisender', token: TOKEN, role: '', scope: '',
 }));
+const previousHumanToken = process.env.BROS_HUMAN_TOKEN;
+process.env.BROS_HUMAN_TOKEN = HUMAN_TOKEN;
 const s = await runCli(['send', 'hello-cli', '--to', 'alpha'], sendHome, sendHome);
+if (previousHumanToken === undefined) delete process.env.BROS_HUMAN_TOKEN;
+else process.env.BROS_HUMAN_TOKEN = previousHumanToken;
 const sentByCli = room.state.messages.find((m) => m.from === 'human' && m.text.includes('hello-cli'));
 check('send sends the exact text, no command name prepended',
   s.code === 0 && sentByCli?.text === 'hello-cli', `${s.out} text=${sentByCli?.text}`);

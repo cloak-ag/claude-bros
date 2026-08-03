@@ -129,8 +129,12 @@ async function serve(flags) {
     console.warn(`  ${c.dim('  it will be lost when the instance is recycled. Set DATABASE_URL to persist.')}`);
   }
 
+  const humanToken = process.env.BROS_HUMAN_TOKEN || null;
+  if (humanToken && humanToken === token) {
+    throw new Error('BROS_HUMAN_TOKEN must be different from BROS_TOKEN. Agents must not receive moderation authority.');
+  }
   const room = await new Room({ name, file: dataFile, persistence }).init();
-  const server = createServer({ room, token });
+  const server = createServer({ room, token, humanToken });
 
   server.listen(port, host, () => {
     const ips = lanAddresses();
@@ -522,8 +526,14 @@ switch (command) {
   case 'send':
     await send(positional, flags);
     break;
+  case 'message-edit':
+    await messageEdit(positional);
+    break;
+  case 'message-delete':
+    await messageDelete(positional);
+    break;
   default:
-    console.error(c.r(`\n  Usage: claude-bros <serve|connect|join|hook|rename|forget|doctor|board|send> ...`));
+    console.error(c.r(`\n  Usage: claude-bros <serve|connect|join|hook|rename|forget|doctor|board|send|message-edit|message-delete> ...`));
     console.log(c.dim(`
   serve                          Start the relay (port 7777, token auto-generated)
     --port N                       Port (default 7777, or BROS_PORT)
@@ -540,6 +550,8 @@ switch (command) {
   doctor                           End-to-end diagnostic for this machine
   board [--watch]                  Show board in terminal (--watch = live refresh)
   send "msg" [--to agent] [--urgent]  Message agents from terminal
+  message-edit M12 "replacement"    Edit a message (requires BROS_HUMAN_TOKEN)
+  message-delete M12                 Delete a message (requires BROS_HUMAN_TOKEN)
   hook --event stop                Called by the Stop hook (installed automatically)
     `));
     process.exit(1);
@@ -784,10 +796,52 @@ async function send(positional, flags) {
     console.error(c.r('\n  Usage: claude-bros send "message" [--to <agent-name>] [--urgent]\n'));
     process.exit(1);
   }
+  const asHuman = !flags.from && Boolean(process.env.BROS_HUMAN_TOKEN);
   await remote('/api/send', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, to: flags.to || 'all', urgent: Boolean(flags.urgent), from: flags.from || 'human' }),
+    headers: asHuman ? humanHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, to: flags.to || 'all', urgent: Boolean(flags.urgent),
+      ...(asHuman ? { from: 'human' } : flags.from ? { from: flags.from } : {}) }),
   });
   console.log(c.g(`\n  sent to ${flags.to || 'everyone'}\n`));
+}
+
+function humanHeaders(extra = {}) {
+  const humanToken = process.env.BROS_HUMAN_TOKEN;
+  if (!humanToken) {
+    console.error(c.r('\n  BROS_HUMAN_TOKEN is required for message moderation.\n'));
+    process.exit(1);
+  }
+  return { 'X-Bros-Human-Token': humanToken, ...extra };
+}
+
+async function messageEdit(positional) {
+  const [id, ...parts] = positional;
+  const text = parts.join(' ');
+  if (!/^M\d+$/.test(id || '') || !text) {
+    console.error(c.r('\n  Usage: claude-bros message-edit M12 "complete replacement text"\n'));
+    process.exit(1);
+  }
+  const result = await remote(`/api/messages/${id}`, {
+    method: 'PATCH', headers: humanHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text }),
+  });
+  if (!result.ok) {
+    console.error(c.r(`\n  ${result.error || `Could not edit ${id}`}\n`));
+    process.exit(1);
+  }
+  console.log(c.g(`\n  edited ${id}\n`));
+}
+
+async function messageDelete(positional) {
+  const [id] = positional;
+  if (!/^M\d+$/.test(id || '')) {
+    console.error(c.r('\n  Usage: claude-bros message-delete M12\n'));
+    process.exit(1);
+  }
+  const result = await remote(`/api/messages/${id}`, { method: 'DELETE', headers: humanHeaders() });
+  if (!result.ok) {
+    console.error(c.r(`\n  ${result.error || `Could not delete ${id}`}\n`));
+    process.exit(1);
+  }
+  console.log(c.g(`\n  deleted ${id}\n`));
 }

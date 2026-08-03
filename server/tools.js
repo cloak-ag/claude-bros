@@ -343,6 +343,34 @@ export const TOOL_DEFS = [
   },
 ];
 
+export const HUMAN_TOOL_DEFS = [
+  {
+    name: 'message_edit',
+    title: 'Edit a board message (human only)',
+    description: 'Replace the text of an existing message. This tool is visible and callable only with the separate human moderation credential. The message keeps its id and displays an edited marker.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Message id, e.g. M497.'),
+        text: str('Complete replacement text. Superseded content is not retained.'),
+      },
+      required: ['id', 'text'],
+    },
+  },
+  {
+    name: 'message_delete',
+    title: 'Delete a board message (human only)',
+    description: 'Erase a message body while retaining a content-free tombstone with its id, author, recipients, and deletion timestamp for accountability. This tool is visible and callable only with the separate human moderation credential.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: str('Message id, e.g. M497.') },
+      required: ['id'],
+    },
+  },
+];
+
+export const toolDefsFor = (human = false) => human ? [...TOOL_DEFS, ...HUMAN_TOOL_DEFS] : TOOL_DEFS;
+
 const text = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }],
 });
@@ -442,7 +470,8 @@ function renderInbox(messages, waited) {
       : 'No unread messages.';
   }
   return messages
-    .map((m) => `[${m.ts.slice(11, 19)}] ${m.from}${m.to !== 'all' ? ' (direct)' : ''}${m.urgent ? ' **URGENT**' : ''}:\n${m.text}`)
+    .map((m) => `[${m.ts.slice(11, 19)}] ${m.from}${m.to !== 'all' ? ' (direct)' : ''}${m.urgent ? ' **URGENT**' : ''}`
+      + `${m.editedAt ? ' (edited by human)' : ''}:\n${m.deletedAt ? '[message deleted by human]' : m.text}`)
     .join('\n\n');
 }
 
@@ -584,15 +613,19 @@ function briefing(room, agent) {
 }
 
 /** Dispatch a tool call. `agent` comes from the connection, not the model. */
-export async function callTool(room, agent, name, args = {}, host = null) {
+export async function callTool(room, agent, name, args = {}, host = null, { human = false } = {}) {
+  const moderationTool = HUMAN_TOOL_DEFS.some((tool) => tool.name === name);
+  if (moderationTool && !human) {
+    return fail('Human moderation authorization is required for this tool.');
+  }
   if (!agent && name !== 'board') {
     return fail('This connection has no agent identity. Stop: do not guess or copy a name. Reconnect using the exact name assigned to this installation in ?agent=<agent-name>.');
   }
-  const membership = agent ? room.isAgentBlocked(agent) : { blocked: false };
+  const membership = agent && !moderationTool ? room.isAgentBlocked(agent) : { blocked: false };
   if (membership.blocked && !['board', 'join'].includes(name)) {
     return fail(`This identity was removed by collaboration poll ${membership.pollId || ''}: ${membership.reason}. It cannot act or vote until an agent_restore poll passes.`);
   }
-  if (agent) {
+  if (agent && !moderationTool) {
     room.touch(agent);
     room.proposeInactiveKickPolls();
   }
@@ -605,6 +638,7 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   const unbriefed = agent && name !== 'join' && !room.state.agents[agent]?.briefedAt;
   const staleStatus = agent && name !== 'status' && name !== 'join' && room.statusStale(agent);
   const withNag = (result) => {
+    if (moderationTool) return result;
     if (!result.content?.[0]) return result;
     const currentWork = agent
       ? room.state.tasks.filter((task) => task.owner === agent && ['claimed', 'blocked'].includes(task.status))
@@ -695,6 +729,20 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       const msg = room.send(agent, { to, text: args.text, urgent: args.urgent, replyTo: args.reply_to });
       if (msg.duplicate) return text(`Already sent that exact text as ${msg.id} a moment ago — not sending it twice.`);
       return text(`Sent ${msg.id} to ${to}${args.reply_to ? ` (re: ${args.reply_to})` : ''}.`);
+    }
+
+    case 'message_edit': {
+      if (!args.id || !args.text) return fail('message_edit requires "id" and "text".');
+      const edited = room.editMessage(args.id, args.text);
+      if (!edited.ok) return fail(edited.error);
+      return text(edited.unchanged ? `${args.id} already has that text.` : `Edited ${args.id}.`);
+    }
+
+    case 'message_delete': {
+      if (!args.id) return fail('message_delete requires "id".');
+      const deleted = room.deleteMessage(args.id);
+      if (!deleted.ok) return fail(deleted.error);
+      return text(deleted.unchanged ? `${args.id} was already deleted.` : `Deleted ${args.id}.`);
     }
 
     case 'inbox': {
