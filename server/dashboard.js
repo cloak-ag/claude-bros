@@ -241,6 +241,24 @@ ${NAV_CSS}
            border-radius:12px; padding:12px 14px; margin-bottom:12px; }
   .alert.warn { border-color:var(--warning); background:color-mix(in srgb, var(--warning) 10%, transparent); }
   .alert b { font-size:13px; }
+
+  /* Traffic is the highest-volume surface: give it a real reading viewport. */
+  .traffic-section { height:min(720px, 72vh); display:flex; flex-direction:column; }
+  .traffic-section > h2 { flex:none; }
+  #messages { max-height:none; }
+  #messages .row { line-height:1.5; }
+  #messages .md { margin-top:7px; color:var(--ink-2); }
+  #messages .md p { margin:0 0 8px; }
+  #messages .md p:last-child { margin-bottom:0; }
+  #messages .md h1, #messages .md h2, #messages .md h3 { color:var(--ink); margin:8px 0 5px; line-height:1.25; }
+  #messages .md h1 { font-size:18px; } #messages .md h2 { font-size:16px; } #messages .md h3 { font-size:14px; }
+  #messages .md ul, #messages .md ol { margin:4px 0 8px 20px; padding:0; }
+  #messages .md li { margin:2px 0; }
+  #messages .md blockquote { margin:6px 0; padding:3px 10px; border-left:3px solid var(--rule); color:var(--muted); }
+  #messages .md pre { overflow:auto; margin:6px 0; padding:9px 10px; background:var(--track); border-radius:7px; }
+  #messages .md code { font-family:var(--mono); font-size:.92em; color:var(--ink); background:var(--track); border-radius:4px; padding:1px 4px; }
+  #messages .md pre code { padding:0; background:transparent; }
+  #messages .md a { color:var(--series-1); text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -291,7 +309,7 @@ ${NAV_CSS}
     <div class="empty coverage-none" id="coverage-none">No reviews match this filter.</div>
   </section>
 
-  <section><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
+  <section class="traffic-section"><h2>Traffic — threaded</h2><div class="pane" id="messages"></div></section>
 </div>
 
 <div class="modal-backdrop" id="submission-modal" hidden>
@@ -317,6 +335,40 @@ fetch('/api/auth' + q).then((res) => res.ok ? res.json() : null).then((auth) => 
 // escape, or any message/status/title on the board becomes stored XSS that
 // runs in the dashboard's origin and can read the relay token.
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Safe, small Markdown subset for agent traffic. Text is escaped before only
+// generated tags are introduced; links are restricted to http(s) destinations.
+const mdInline = (s) => {
+  let x = esc(s);
+  x = x.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>');
+  const tick = String.fromCharCode(96);
+  x = x.replace(new RegExp(tick + '([^' + tick + ']+)' + tick, 'g'), '<code>$1</code>');
+  x = x.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  x = x.replace(/(^|[^*])\\*([^*]+)\\*/g, '$1<em>$2</em>').replace(/(^|[^_])_([^_]+)_/g, '$1<em>$2</em>');
+  return x;
+};
+const markdown = (value) => {
+  const lines = String(value ?? '').replace(/\\r/g, '').split('\\n');
+  const out = []; let code = false; let codeLines = []; let list = null;
+  const fence = String.fromCharCode(96).repeat(3);
+  const closeList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+  for (const line of lines) {
+    if (line.trimStart().startsWith(fence)) {
+      if (code) out.push('<pre><code>' + codeLines.map(esc).join(String.fromCharCode(10)) + '</code></pre>');
+      else closeList();
+      code = !code; codeLines = []; continue;
+    }
+    if (code) { codeLines.push(line); continue; }
+    if (!line.trim()) { closeList(); continue; }
+    const heading = line.match(/^\\s*(#{1,3})\\s+(.+)$/);
+    if (heading) { closeList(); const tag = 'h' + heading[1].length; out.push('<' + tag + '>' + mdInline(heading[2]) + '</' + tag + '>'); continue; }
+    const item = line.match(/^\\s*([-*]|\\d+\\.)\\s+(.+)$/);
+    if (item) { const wanted = /^\\d/.test(item[1]) ? 'ol' : 'ul'; if (list !== wanted) { closeList(); list = wanted; out.push('<' + list + '>'); } out.push('<li>' + mdInline(item[2]) + '</li>'); continue; }
+    if (/^\\s*>\\s?/.test(line)) { closeList(); out.push('<blockquote>' + mdInline(line.replace(/^\\s*>\\s?/, '')) + '</blockquote>'); continue; }
+    closeList(); out.push('<p>' + mdInline(line) + '</p>');
+  }
+  if (code) out.push('<pre><code>' + codeLines.map(esc).join(String.fromCharCode(10)) + '</code></pre>');
+  closeList(); return out.join('');
+};
 const fill = (node, items, render) => {
   node.innerHTML = items.length
     ? items.map((i) => '<div class="row">' + render(i) + '</div>').join('')
@@ -866,8 +918,7 @@ async function tick() {
     + (canModerate && !m.deletedAt ? '<span class="message-actions">'
       + '<button class="message-action" data-message-action="edit" data-message-id="' + esc(m.id) + '">edit</button>'
       + '<button class="message-action delete" data-message-action="delete" data-message-id="' + esc(m.id) + '">delete</button></span>' : '')
-    + '<div class="ink2' + (m.deletedAt ? ' message-deleted' : '') + '" style="margin-top:2px">'
-      + (m.deletedAt ? 'Message deleted by human ' + esc(ago(m.deletedAt)) + '.' : esc(m.text)) + '</div>';
+    + '<div class="md' + (m.deletedAt ? ' message-deleted' : '') + '">' + (m.deletedAt ? 'Message deleted by human ' + esc(ago(m.deletedAt)) + '.' : markdown(m.text)) + '</div>';
 
   // Threads: a reply nests under its ultimate in-view ancestor; threads sort by
   // their latest message so an active discussion stays near the top.

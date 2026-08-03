@@ -774,6 +774,8 @@ check('shared environment uses separated responsive key/value rows',
     && !pageText.includes('<div class="envgrid">'));
 check('coverage is a searchable full-width ledger', pageText.includes('coverage-filter') && pageText.includes('data-coverage-row'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
+check('dashboard gives traffic a tall viewport and Markdown renderer',
+  pageText.includes('traffic-section') && pageText.includes('const markdown') && pageText.includes('max-height:none'));
 // Regression for the dashboard rewrite: esc() must actually escape (agent text is
 // injected into innerHTML) and the state fetch must build a real ?token= query.
 const escSource = pageText.match(/const esc =[^}]+}/)?.[0] || '';
