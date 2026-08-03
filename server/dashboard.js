@@ -97,6 +97,12 @@ ${NAV_CSS}
   .thread .row { border-bottom:0; padding:4px 0; }
   .thread + .thread { margin-top:4px; }
   .replyto { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .message-actions { display:inline-flex; gap:5px; margin-left:8px; }
+  .message-action { appearance:none; border:1px solid var(--line); border-radius:6px; background:var(--plane);
+                    color:var(--muted); padding:2px 6px; font:11px var(--mono); cursor:pointer; }
+  .message-action:hover { color:var(--ink); border-color:var(--muted); }
+  .message-action.delete:hover { color:var(--critical); border-color:var(--critical); }
+  .message-deleted { color:var(--muted); font-style:italic; }
   .hb { font-variant-numeric:tabular-nums; }
   .digest { border-left:2px solid var(--series-1); padding:2px 0 2px 12px; margin-bottom:12px; }
   .digest b { font-family:var(--mono); font-size:12px; color:var(--series-1); }
@@ -247,6 +253,11 @@ ${NAV_CSS}
 const token = new URLSearchParams(location.search).get('token');
 const q = token ? '?token=' + encodeURIComponent(token) : '';
 const el = (id) => document.getElementById(id);
+let canModerate = false;
+let messageById = new Map();
+fetch('/api/auth' + q).then((res) => res.ok ? res.json() : null).then((auth) => {
+  canModerate = Boolean(auth && auth.human);
+}).catch(() => {});
 // Agent-supplied text flows through this into innerHTML — it must actually
 // escape, or any message/status/title on the board becomes stored XSS that
 // runs in the dashboard's origin and can read the relay token.
@@ -604,11 +615,17 @@ async function tick() {
     + '<span class="muted"> ' + esc(ago(m.ts)) + '</span>  ' + who(m.from)
     + '<span class="muted"> → ' + esc(m.to) + '</span>' + (m.urgent ? ' ' + pill('vulnerable', 'urgent') : '')
     + (m.replyTo ? ' <span class="replyto">↳ re ' + esc(m.replyTo) + '</span>' : '')
-    + '<div class="ink2" style="margin-top:2px">' + esc(m.text) + '</div>';
+    + (m.editedAt ? ' <span class="muted">edited ' + esc(ago(m.editedAt)) + '</span>' : '')
+    + (canModerate && !m.deletedAt ? '<span class="message-actions">'
+      + '<button class="message-action" data-message-action="edit" data-message-id="' + esc(m.id) + '">edit</button>'
+      + '<button class="message-action delete" data-message-action="delete" data-message-id="' + esc(m.id) + '">delete</button></span>' : '')
+    + '<div class="ink2' + (m.deletedAt ? ' message-deleted' : '') + '" style="margin-top:2px">'
+      + (m.deletedAt ? 'Message deleted by human ' + esc(ago(m.deletedAt)) + '.' : esc(m.text)) + '</div>';
 
   // Threads: a reply nests under its ultimate in-view ancestor; threads sort by
   // their latest message so an active discussion stays near the top.
   const lastMsgs = (s.messages || []).slice(-40);
+  messageById = new Map((s.messages || []).map((m) => [m.id, m]));
   const byId = new Map(lastMsgs.map((m) => [m.id, m]));
   const rootOf = (m, seen) => {
     seen = seen || new Set();
@@ -646,6 +663,33 @@ function goStale(why) {
     + ' and is probably out of date. On the relay machine, run:<br>'
     + '<code>node bin/claude-bros.js serve --token <your token></code></div>';
 }
+el('messages').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-message-action]');
+  if (!button || !canModerate) return;
+  const id = button.dataset.messageId;
+  const action = button.dataset.messageAction;
+  const message = messageById.get(id);
+  if (!message) return;
+  let options;
+  if (action === 'edit') {
+    const replacement = prompt('Replace ' + id + ' completely:', message.text || '');
+    if (replacement === null || !replacement.trim() || replacement === message.text) return;
+    options = { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:replacement}) };
+  } else {
+    if (!confirm('Delete ' + id + '? Its body will be erased and only an audit tombstone will remain.')) return;
+    options = { method:'DELETE' };
+  }
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/messages/' + encodeURIComponent(id) + q, options);
+    const result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.error || 'HTTP ' + res.status);
+    await tick();
+  } catch (error) {
+    alert('Could not ' + action + ' ' + id + ': ' + error.message);
+    button.disabled = false;
+  }
+});
 tick();
 setInterval(tick, 3000);
 </script>

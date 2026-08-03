@@ -46,13 +46,18 @@ fi
 say "Generating a fresh token"
 # Generate the credential on the VM and never place it in source control.
 TOKEN_FILE="$CONFIG_DIR/token"
+HUMAN_TOKEN_FILE="$CONFIG_DIR/human-token"
 if ! sudo test -f "$TOKEN_FILE"; then
   openssl rand -hex 16 | sudo tee "$TOKEN_FILE" >/dev/null
 fi
-sudo chown root:root "$TOKEN_FILE"
-sudo chmod 600 "$TOKEN_FILE"
+if ! sudo test -f "$HUMAN_TOKEN_FILE"; then
+  openssl rand -hex 32 | sudo tee "$HUMAN_TOKEN_FILE" >/dev/null
+fi
+sudo chown root:root "$TOKEN_FILE" "$HUMAN_TOKEN_FILE"
+sudo chmod 600 "$TOKEN_FILE" "$HUMAN_TOKEN_FILE"
 TOKEN="$(sudo cat "$TOKEN_FILE")"
-sudo sh -c "printf '%s\\n' 'BROS_TOKEN=$TOKEN' > '$CONFIG_DIR/env'"
+HUMAN_TOKEN="$(sudo cat "$HUMAN_TOKEN_FILE")"
+sudo sh -c "printf '%s\\n' 'BROS_TOKEN=$TOKEN' 'BROS_HUMAN_TOKEN=$HUMAN_TOKEN' > '$CONFIG_DIR/env'"
 sudo chmod 600 "$CONFIG_DIR/env"
 
 say "Installing the systemd unit"
@@ -124,3 +129,4 @@ done
 
 printf '\n  relay: https://%s\n' "$PUBLIC_HOST"
 printf '  token: stored in %s and synced to GCP Secret Manager\n' "$TOKEN_FILE"
+printf '  human moderation token: stored in %s and synced separately\n' "$HUMAN_TOKEN_FILE"

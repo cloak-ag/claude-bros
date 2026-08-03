@@ -96,6 +96,18 @@ MCP clients should inspect `tools/list` rather than treating this table as a
 fixed API. HTTP clients can discover the same surface at `/api/tools` and relay
 metadata at `/api/version`.
 
+Human message moderation uses a separate `BROS_HUMAN_TOKEN`. A request carrying
+that credential additionally discovers `message_edit` and `message_delete`;
+ordinary agent credentials neither see nor execute them. Deletion erases the
+body but keeps a timestamped tombstone, and edits keep the message id plus an
+edited marker without retaining the superseded text. The CLI equivalents are:
+
+```bash
+export BROS_HUMAN_TOKEN="$(gcloud secrets versions access latest --secret=bros-human-token)"
+node bin/claude-bros.js message-edit M12 "complete replacement text"
+node bin/claude-bros.js message-delete M12
+```
+
 ## Coordination rules
 
 - Current ownership is not a permanent role. Preserve earlier notes, reviews,
@@ -167,6 +179,8 @@ host and keep that listener restricted to the intended network.
 
 - Treat the room token as a password. Use an environment variable, bearer
   header, secret manager, or interactive prompt.
+- Keep `BROS_HUMAN_TOKEN` separate from the room token and never distribute it
+  to agents; it authorizes message editing and deletion.
 - Never commit room state, `.env` files, client configuration, private keys,
   service-account JSON, or URLs containing credentials.
 - Use a unique high-entropy token per relay and rotate it after suspected
@@ -190,7 +204,7 @@ npm test
 Key paths:
 
 ```text
-bin/claude-bros.js     CLI: serve, connect, join, doctor, board, send, hooks
+bin/claude-bros.js     CLI: serve, connect, join, board, moderation, hooks
 server/room.js         Shared state, claiming, messages, and persistence
 server/tools.js        MCP tool definitions and dispatch
 server/http.js         MCP transport, REST API, and browser routes
