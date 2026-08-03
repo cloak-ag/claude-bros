@@ -58,9 +58,23 @@ ${NAV_CSS}
              overflow-wrap:anywhere; }
   .env-value { min-width:0; color:var(--ink-2); font-size:13px; line-height:1.5;
                white-space:pre-wrap; overflow-wrap:anywhere; }
+  /* Values span a 14-character repo slug to multi-sentence prose. Long ones
+     clamp behind an expander so one agent's build notes cannot push the rest of
+     the board off screen, and identifiers get mono while prose stays sans. */
+  .env-row { grid-template-columns:minmax(140px,220px) minmax(0,1fr) auto; }
+  .env-value.clamp .env-body { display:-webkit-box; -webkit-line-clamp:2;
+                               -webkit-box-orient:vertical; overflow:hidden; }
+  .env-value .atom { font-family:var(--mono); font-size:12.5px; color:var(--ink); }
+  .env-by { display:block; font-size:11px; color:var(--muted); margin-top:4px; white-space:normal; }
+  .env-more { align-self:start; background:none; border:1px solid var(--line); color:var(--muted);
+              border-radius:999px; font:11px var(--mono); padding:1px 8px; cursor:pointer; white-space:nowrap; }
+  .env-more:hover { color:var(--ink); border-color:var(--rule); }
+  .env-group { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+               margin:16px 0 2px; padding-top:10px; border-top:1px solid var(--line); }
+  .env-group:first-child { margin-top:0; padding-top:0; border-top:0; }
   @media (max-width:640px) {
-    .env-row { grid-template-columns:1fr; gap:3px; padding:11px 0; }
-    .env-key { color:var(--ink); }
+    .env-row { grid-template-columns:1fr auto; gap:3px; padding:11px 0; }
+    .env-key { color:var(--ink); grid-column:1/-1; }
   }
 
   /* agent identity: colour ALWAYS beside the name, never alone */
@@ -718,11 +732,53 @@ async function tick() {
   ].join('');
 
   const env = Object.entries(s.env || {});
+  // The facts every agent must agree on come first, in a fixed order. Anything
+  // else an agent pinned is its own scratchpad and sorts below.
+  const ENV_CORE = ['repo', 'commit', 'build', 'run', 'target', 'window', 'scope_url'];
+  const envRank = (k) => {
+    const i = ENV_CORE.indexOf(String(k).toLowerCase());
+    return i === -1 ? ENV_CORE.length : i;
+  };
+  const envCore = env.filter(([k]) => envRank(k) < ENV_CORE.length)
+    .sort((a, b) => envRank(a[0]) - envRank(b[0]));
+  const envNotes = env.filter(([k]) => envRank(k) === ENV_CORE.length)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const envRow = ([k, v]) => {
+    const val = String(v.value ?? '');
+    // No whitespace means an identifier — a SHA, a slug, a path — which reads
+    // better in mono. Prose does not.
+    const atomic = !/\s/.test(val) && val.length <= 80;
+    const long = val.length > 130;
+    return '<div class="env-row"><div class="env-key">' + esc(k) + '</div>'
+      + '<div class="env-value' + (long ? ' clamp' : '') + '">'
+      +   '<span class="env-body' + (atomic ? ' atom' : '') + '">' + esc(val) + '</span>'
+      +   (v.by ? '<span class="env-by">' + esc(v.by) + (v.ts ? ' · ' + esc(ago(v.ts)) : '') + '</span>' : '')
+      + '</div>'
+      + (long ? '<button class="env-more" type="button">more</button>' : '<span></span>')
+      + '</div>';
+  };
+
   el('env').innerHTML = env.length
-    ? env.map(([k, v]) => '<div class="env-row"><div class="env-key">' + esc(k)
-        + '</div><div class="env-value">' + esc(v.value) + '</div></div>').join('')
+    ? (envCore.length ? '<div class="env-group">pinned facts</div>' + envCore.map(envRow).join('') : '')
+      + (envNotes.length ? '<div class="env-group">agent notes (' + envNotes.length + ')</div>'
+          + envNotes.map(envRow).join('') : '')
     : '<div class="empty">Not recorded. Agents should pin repo, commit and build with '
       + '<code>env_set</code> — otherwise they may be auditing different code.</div>';
+
+  for (const btn of el('env').querySelectorAll('.env-more')) {
+    const box = btn.parentElement.querySelector('.env-value');
+    // Measure the clamped element while it is clamped: .env-value also carries
+    // the attribution line so it never overflows, and an unclamped inline span
+    // reports zero height. A character count alone would leave dead buttons.
+    const body = box.querySelector('.env-body');
+    if (body.scrollHeight <= body.clientHeight + 1) {
+      box.classList.remove('clamp');
+      btn.remove();
+      continue;
+    }
+    btn.onclick = () => { btn.textContent = box.classList.toggle('clamp') ? 'more' : 'less'; };
+  }
 
   fill(el('goals'), withProgress, (g) =>
     '<div style="display:flex;gap:10px;align-items:baseline"><code class="muted" style="white-space:nowrap">' + esc(g.id) + '</code>'
