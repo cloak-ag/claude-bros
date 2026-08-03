@@ -455,14 +455,14 @@ check('a bad reply_to is refused', (await call('beta', 'send', { text: 'x', repl
 
 console.log('\n  identity collision is refused, not just warned');
 await call('zulu', 'join', {});
-room.recordEndpoint('zulu', '10.0.0.1');
+room.recordEndpoint('zulu', 'host-a.example');
 room.state.agents.zulu.lastSeen = Date.now();
-const stolen2 = room.join('zulu', { host: '10.0.0.2' });
+const stolen2 = room.join('zulu', { host: 'host-b.example' });
 check('a second machine cannot take a live name', !stolen2.ok && stolen2.error.includes('already in use'));
 check('the refusal says what to do', stolen2.error.includes('different --as name'));
 room.state.agents.zulu.lastSeen = Date.now() - 45 * 60_000;
-check('the name frees up once that machine goes quiet', room.join('zulu', { host: '10.0.0.2' }).ok);
-room.state.agents.zulu.hosts = ['10.0.0.2'];  // tidy up the deliberate collision
+check('the name frees up once that machine goes quiet', room.join('zulu', { host: 'host-b.example' }).ok);
+room.state.agents.zulu.hosts = ['host-b.example'];  // tidy up the deliberate collision
 
 console.log('\n  digest');
 for (let i = 0; i < 22; i += 1) await call('beta', 'send', { text: `digest filler ${i}` });
@@ -473,12 +473,12 @@ check('it summarises rather than replays', !dig.text.includes('digest filler 3')
 console.log('\n  identity clash detection');
 check('one machine is not a clash', room.recordEndpoint('alpha', 'relay-host') === null);
 check('same machine twice is still not a clash', room.recordEndpoint('alpha', 'relay-host') === null);
-const clash = room.recordEndpoint('alpha', '192.168.15.31');
+const clash = room.recordEndpoint('alpha', 'host-c.example');
 check('a second machine using the name is flagged', Array.isArray(clash) && clash.length === 2, JSON.stringify(clash));
 check('the clash is listed on the board', room.conflicts()[0]?.name === 'alpha');
 const warned = await call('alpha', 'board');
 check('agents are warned in the board tool output',
-  warned.text.includes('WARNING') && warned.text.includes('192.168.15.31'));
+  warned.text.includes('WARNING') && warned.text.includes('host-c.example'));
 check('the warning names the fix', warned.text.includes('--as name'));
 room.state.agents.alpha.hosts = ['relay-host'];
 // zulu picked up a second host ('relay-host' from its join call, then the fake

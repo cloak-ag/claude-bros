@@ -44,7 +44,7 @@ else
 fi
 
 say "Generating a fresh token"
-# The old LAN token is recoverable from public git history — never reuse it.
+# Generate the credential on the VM and never place it in source control.
 TOKEN_FILE="$CONFIG_DIR/token"
 if ! sudo test -f "$TOKEN_FILE"; then
   openssl rand -hex 16 | sudo tee "$TOKEN_FILE" >/dev/null

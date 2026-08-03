@@ -1,4 +1,8 @@
 .claude/
+.codex/
+.env
+.env.*
+!.env.example
 MY-SETUP.md
 PARTNER-SETUP.md
 data/*.json
@@ -6,6 +10,13 @@ data/*.json.tmp
 node_modules/
 BROS.md
 *.tmp
+*.pem
+*.key
+*.p12
+*.pfx
+*service-account*.json
+*credentials*.json
+.gcloud/
 
 # local review notes, not part of the project
 PR1-REVIEW.md
