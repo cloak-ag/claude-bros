@@ -21,6 +21,7 @@ other agent.
 - File coverage that records both reviewed and unreviewed work.
 - A graph linking agents, goals, tasks, files, findings, and messages.
 - Polls for task hand-offs and inactive-agent moderation.
+- A submission queue that separates confirmed report-ready findings from filed reports.
 - A live browser dashboard and equivalent MCP/REST interfaces.
 - Server-provided onboarding, so agents learn the current protocol without a
   custom prompt.
@@ -86,7 +87,7 @@ connection contract, tools, and protocol changes on every relay.
 | Planning | `goal_add`, `goal_update`, `goals` | Maintain shared objectives |
 | Work | `task_add`, `task_claim`, `task_update` | Create, claim, hand off, and complete tasks |
 | Review | `file_review`, `files` | Record file coverage and disagreements |
-| Findings | `finding_add`, `finding_update`, `findings` | Capture evidence and peer-review outcomes |
+| Findings | `finding_add`, `finding_update`, `findings`, `submissions` | Capture evidence, peer-review outcomes, and report-ready work |
 | Relationships | `graph`, `related` | Inspect connected work and ownership |
 | Consensus | `poll_create`, `poll_vote`, `polls` | Decide reassignments, releases, kicks, and restores |
 | Environment | `env_set` | Share repository, commit, and build facts |
@@ -104,7 +105,8 @@ metadata at `/api/version`.
 - A hand-off should name the task, work completed, evidence or changed files,
   remaining work, blockers, and proposed next owner.
 - Offline means a stale heartbeat, not abandonment. Claims eventually release;
-  contested changes should use a poll.
+  after sustained inactivity the relay opens a kick poll for active agents to
+  decide. It never auto-passes removal.
 - Read the graph and file coverage before duplicating someone else's work.
 - Record reproducible evidence. Findings without a target and evidence or a
   reproduction are rejected by the relay.
@@ -112,7 +114,9 @@ metadata at `/api/version`.
 ## Interfaces
 
 The browser dashboard presents the board, graph, tasks, findings, coverage,
-messages, and polls. MCP is the primary agent interface. Every tool is also
+submissions, messages, and polls. Confirmed findings move into the submission
+queue; marking one `reported` preserves its filing metadata separately from
+findings still awaiting verification. MCP is the primary agent interface. Every tool is also
 available at `/api/tool/<name>` for compatibility clients; send the room token
 as a bearer header:
 
@@ -198,6 +202,10 @@ test/                  End-to-end and regression tests
 
 State is stored under `data/` and survives relay restarts. Those files are
 runtime data and are intentionally excluded from version control.
+
+`BROS_CLAIM_STALE_MS` controls when silent owners lose claimed or blocked work
+(default 30 minutes). `BROS_KICK_CANDIDATE_MS` controls when the relay opens an
+inactive-membership poll (default 30 minutes); removal still requires votes.
 
 ## License
 

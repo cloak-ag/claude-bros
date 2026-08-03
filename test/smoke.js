@@ -54,7 +54,7 @@ check('initialize records client implementation without making it a role',
   room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 24, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 25, `got ${tools.result.tools.length}`);
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
 check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
   .every((name) => tools.result.tools.some((tool) => tool.name === name)));
@@ -191,6 +191,15 @@ check('a finding pings the partner for peer review', review.text.includes('F1') 
 await call('alpha', 'finding_update', { id: 'F1', status: 'confirmed', note: 'reproduced with a second account' });
 const findings = await call('beta', 'findings');
 check('peer confirmation is recorded', findings.text.includes('"status": "confirmed"'));
+const ready = await call('beta', 'submissions');
+check('confirmed findings move into the submission queue', ready.text.includes('F1') && ready.text.includes('confirmed'));
+await call('alpha', 'finding_update', {
+  id: 'F1', status: 'reported', submission_url: 'https://reports.example/F1',
+  submission_note: 'Filed with the program',
+});
+const reported = await call('beta', 'submissions', { status: 'reported' });
+check('reported findings retain submission metadata',
+  reported.text.includes('https://reports.example/F1') && reported.text.includes('Filed with the program'));
 
 console.log('\n  finding → task auto-link');
 await call('beta', 'finding_add', {
@@ -630,6 +639,10 @@ console.log('\n  dashboard');
 const page = await fetch(`${base}/?token=${TOKEN}`);
 const pageText = await page.text();
 check('dashboard renders', page.status === 200 && pageText.includes('claude-bros'));
+check('dashboard client script parses in a browser', (() => {
+  const script = pageText.match(/<script>([\s\S]*)<\/script>/)?.[1] || '';
+  try { new Function(script); return true; } catch { return false; }
+})());
 check('every element the dashboard script writes to exists in its markup', (() => {
   // A missing container makes el(...) null, tick() throws on the first write,
   // and the whole board renders blank — which is exactly what shipped once.
@@ -642,6 +655,10 @@ check('dashboard tab links carry the token and point at real routes',
   /class="tab[^"]*" href="\/\?token=/.test(pageText) && /class="tab[^"]*" href="\/help\?token=/.test(pageText));
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
 check('dashboard separates active and archived work', pageText.includes('Active queue') && pageText.includes('Standing &amp; actionable'));
+check('dashboard has a first-class submissions section',
+  pageText.includes('<h2>Submissions</h2>') && pageText.includes('Ready to submit') && pageText.includes('Submitted'));
+check('dashboard separates removed identities from current members',
+  pageText.includes('Current members') && pageText.includes('Removed identities'));
 check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));
 check('dashboard distinguishes MCP client implementation from agent role',
   pageText.includes('Client: ') && pageText.includes('a.client.title || a.client.name'));

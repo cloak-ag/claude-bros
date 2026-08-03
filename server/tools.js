@@ -267,6 +267,8 @@ export const TOOL_DEFS = [
           enum: ['unverified', 'confirmed', 'rejected', 'reported'],
         }),
         note: str('Why. If rejecting, say what the benign explanation is.'),
+        submission_url: str('Optional external report URL or identifier when status is reported.'),
+        submission_note: str('Optional submission-specific note, such as program, date, or next follow-up.'),
       },
       required: ['id'],
     },
@@ -276,6 +278,18 @@ export const TOOL_DEFS = [
     title: 'List all findings',
     description: 'Read every finding both agents have logged, with status and evidence.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'submissions',
+    title: 'List report-ready and submitted findings',
+    description:
+      'Read the submission queue: confirmed findings ready for a human to file, followed by findings already marked reported with their submission metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: str('Optional: confirmed | reported.', { enum: ['confirmed', 'reported'] }),
+      },
+    },
   },
   {
     name: 'related',
@@ -348,9 +362,11 @@ function renderBoard(board) {
     );
   }
 
-  lines.push('## Agents');
-  if (!board.agents.length) lines.push('  (nobody has joined yet)');
-  for (const a of board.agents) {
+  const currentAgents = board.agents.filter((a) => a.membershipStatus !== 'kicked');
+  const removedAgents = board.agents.filter((a) => a.membershipStatus === 'kicked');
+  lines.push('## Current agents');
+  if (!currentAgents.length) lines.push('  (nobody is currently a member)');
+  for (const a of currentAgents) {
     const mark = a.online ? '●' : '○';
     const current = a.currentTasks || [];
     const taken = a.tasksTaken || [];
@@ -358,6 +374,11 @@ function renderBoard(board) {
     lines.push(`  ${mark} ${a.name}${a.name === board.you ? ' (you)' : ''} — ${current.length ? current.map((task) => `${task.id} ${task.title}`).join('; ') : 'available (no current task)'}`);
     lines.push(`      activity: ${a.status || 'idle'}  [seen ${a.lastSeenAgo}]`);
     if (taken.length) lines.push(`      took: ${taken.join(', ')}${built.length ? `; built/completed: ${built.map((task) => task.id).join(', ')}` : ''}`);
+  }
+  if (removedAgents.length) {
+    lines.push('', `## Removed identities (${removedAgents.length})`);
+    lines.push(`  ${removedAgents.map((a) => a.name).join(', ')}`);
+    lines.push('  (historical work remains attributed; they are not current partners or task owners)');
   }
 
   const section = (label, list, render) => {
@@ -447,7 +468,7 @@ function renderPoll(poll) {
  */
 function briefing(room, agent) {
   const board = room.board(agent);
-  const peers = board.agents.filter((a) => a.name !== agent);
+  const peers = board.agents.filter((a) => a.name !== agent && a.membershipStatus !== 'kicked');
   const online = peers.filter((a) => a.online);
   const goals = board.goals.filter((g) => g.status === 'active');
   const env = Object.entries(room.state.env || {});
@@ -571,7 +592,10 @@ export async function callTool(room, agent, name, args = {}, host = null) {
   if (membership.blocked && !['board', 'join'].includes(name)) {
     return fail(`This identity was removed by collaboration poll ${membership.pollId || ''}: ${membership.reason}. It cannot act or vote until an agent_restore poll passes.`);
   }
-  if (agent) room.touch(agent);
+  if (agent) {
+    room.touch(agent);
+    room.proposeInactiveKickPolls();
+  }
 
   /**
    * An agent already mid-session when the protocol landed never saw the
@@ -657,8 +681,13 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       if (!args.text) return fail('send requires "text".');
       const to = args.to || 'all';
       if (to !== 'all' && !room.state.agents[to]) {
-        const known = Object.keys(room.state.agents).join(', ') || '(none)';
+        const known = Object.values(room.state.agents)
+          .filter((candidate) => candidate.membershipStatus !== 'kicked')
+          .map((candidate) => candidate.name).join(', ') || '(none)';
         return fail(`No agent named "${to}". Known agents: ${known}. Use "all" to broadcast.`);
+      }
+      if (to !== 'all' && room.isAgentBlocked(to).blocked) {
+        return fail(`${to} was removed by a collaboration poll and is not a current message recipient.`);
       }
       if (args.reply_to && !/^[MF]\d+$/.test(args.reply_to)) {
         return fail('reply_to must be a message id (M12) or finding id (F3).');
@@ -682,6 +711,14 @@ export async function callTool(room, agent, name, args = {}, host = null) {
       }
       if (args.depends_on && !room.state.tasks.some((t) => t.id === args.depends_on)) {
         return fail(`No task ${args.depends_on} to depend on.`);
+      }
+      if (args.assign_to) {
+        const target = room.state.agents[args.assign_to];
+        if (!target) return fail(`No agent named "${args.assign_to}".`);
+        if (room.isAgentBlocked(args.assign_to).blocked) return fail(`${args.assign_to} was removed and cannot receive work.`);
+        if (Date.now() - (target.lastSeen || 0) >= 90_000) {
+          return fail(`${args.assign_to} is inactive and cannot receive assigned work. Leave the task open or choose an active agent.`);
+        }
       }
       const task = room.addTask(agent, {
         title: args.title,
@@ -877,7 +914,12 @@ export async function callTool(room, agent, name, args = {}, host = null) {
     }
 
     case 'finding_update': {
-      const result = room.updateFinding(agent, args.id, { status: args.status, note: args.note });
+      const result = room.updateFinding(agent, args.id, {
+        status: args.status,
+        note: args.note,
+        submissionUrl: args.submission_url,
+        submissionNote: args.submission_note,
+      });
       if (!result.ok) return fail(result.error);
       room.send(agent, { to: 'all', text: `${result.finding.id} marked ${result.finding.status} by ${agent}${args.note ? `: ${args.note}` : ''}` });
       return text(`${result.finding.id} is now ${result.finding.status}.`);
@@ -885,6 +927,11 @@ export async function callTool(room, agent, name, args = {}, host = null) {
 
     case 'findings':
       return text(room.state.findings.length ? room.state.findings : 'No findings logged yet.');
+
+    case 'submissions': {
+      const list = room.submissions().filter((finding) => !args.status || finding.status === args.status);
+      return text(list.length ? list : 'No confirmed or reported findings yet.');
+    }
 
     case 'related': {
       if (!args.id) return fail('related requires "id" — a file path, finding id, task id, goal id or agent name.');
