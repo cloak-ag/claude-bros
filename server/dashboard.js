@@ -128,6 +128,23 @@ ${NAV_CSS}
   .finding-item { padding:13px 0; }
   .finding-item .path { margin-top:7px; color:var(--ink-2); overflow-wrap:anywhere; }
 
+  /* Confirmed findings are deliverables, not ordinary queue noise. Keep the
+     filing queue full-width so evidence and report metadata have room. */
+  .submissions-head { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; margin-bottom:16px; }
+  .submissions-head h2 { margin-bottom:4px; }
+  .submissions-head p { margin:0; }
+  .submission-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+  .submission-column { min-width:0; }
+  .submission-card { border:1px solid var(--line); border-radius:10px; background:var(--plane); padding:13px 14px; }
+  .submission-card + .submission-card { margin-top:10px; }
+  .submission-copy { margin-top:9px; color:var(--ink-2); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .submission-detail { margin-top:10px; border-top:1px solid var(--line); padding-top:9px; }
+  .submission-detail summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  @media (max-width:840px) {
+    .submission-grid { grid-template-columns:1fr; }
+    .submissions-head { align-items:flex-start; flex-direction:column; }
+  }
+
   /* Coverage is a full-width ledger. Each review remains a single row so the
      reviewer, verdict and note cannot become visually detached. */
   .coverage-head { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin-bottom:16px; }
@@ -202,6 +219,17 @@ ${NAV_CSS}
     <section><h2>Polls — team decisions</h2><div class="pane" id="polls"></div></section>
     <section><h2>Digest — what got decided</h2><div class="pane" id="digest"></div></section>
   </div>
+
+  <section class="submissions-section">
+    <div class="submissions-head">
+      <div><h2>Submissions</h2><p class="muted">Confirmed findings ready to file, separated from reports already submitted.</p></div>
+      <div class="muted" id="submission-summary"></div>
+    </div>
+    <div class="submission-grid">
+      <div class="submission-column"><div class="group-title">Ready to submit <span class="count" id="ready-count">0</span></div><div id="submissions-ready"></div></div>
+      <div class="submission-column"><div class="group-title">Submitted <span class="count" id="reported-count">0</span></div><div id="submissions-reported"></div></div>
+    </div>
+  </section>
 
   <section class="coverage-section">
     <div class="coverage-head">
@@ -312,6 +340,7 @@ const applyCoverageFilter = () => {
 el('coverage-filter').addEventListener('input', applyCoverageFilter);
 let taskArchiveOpen = false;
 let rejectedArchiveOpen = false;
+let agentArchiveOpen = false;
 
 async function tick() {
   let s;
@@ -329,11 +358,13 @@ async function tick() {
   el('when').textContent = 'updated ' + at(lastGood) + ' UTC−3';
 
   const agents = Object.values(s.agents || {});
-  const names = agents.map((a) => a.name).sort();
+  const activeAgents = agents.filter((a) => a.membershipStatus !== 'kicked');
+  const removedAgents = agents.filter((a) => a.membershipStatus === 'kicked');
+  const names = activeAgents.map((a) => a.name).sort();
   palette = {};
   names.forEach((n, i) => { palette[n] = 'var(--series-' + ((i % 6) + 1) + ')'; });
 
-  const clashes = agents.filter((a) => (a.hosts || []).length > 1);
+  const clashes = activeAgents.filter((a) => (a.hosts || []).length > 1);
   el('clash').innerHTML = clashes.length
     ? clashes.map((a) => '<div class="alert"><b>Name clash:</b> "' + esc(a.name)
         + '" is connecting from ' + a.hosts.length + ' machines (' + esc(a.hosts.join(', '))
@@ -342,7 +373,7 @@ async function tick() {
     : '';
 
   const counts = { active: 0, quiet: 0, offline: 0 };
-  agents.forEach((a) => { counts[liveness(a)] += 1; });
+  activeAgents.forEach((a) => { counts[liveness(a)] += 1; });
   const tasks = s.tasks || [];
   const goals = s.goals || [];
   const files = Object.values(s.files || {});
@@ -365,13 +396,16 @@ async function tick() {
   const reviewed = files.filter((f) => (f.reviews || []).length);
   const peer = reviewed.filter((f) => f.reviews.length > 1);
   const disputed = reviewed.filter((f) => new Set(f.reviews.map((r) => r.verdict)).size > 1);
-  const openFindings = findings.filter((f) => f.status !== 'rejected');
-  const worst = ['critical','high','medium','low','info'].find((sev) => openFindings.some((f) => f.severity === sev));
+  const actionableFindings = findings.filter((f) => !['confirmed', 'reported', 'rejected'].includes(f.status));
+  const readySubmissions = findings.filter((f) => f.status === 'confirmed');
+  const reportedSubmissions = findings.filter((f) => f.status === 'reported');
+  const worst = ['critical','high','medium','low','info'].find((sev) => actionableFindings.some((f) => f.severity === sev));
 
   el('stats').innerHTML = [
-    '<div class="stat"><div class="n">' + counts.active + '<span class="muted" style="font-size:15px">/' + agents.length + '</span></div>'
+    '<div class="stat"><div class="n">' + counts.active + '<span class="muted" style="font-size:15px">/' + activeAgents.length + '</span></div>'
       + '<div class="l">agents up</div><div class="sub">' + esc(names.join(', ') || '—')
-      + ' · ' + counts.quiet + ' quiet / ' + counts.offline + ' offline</div></div>',
+      + ' · ' + counts.quiet + ' quiet / ' + counts.offline + ' offline'
+      + (removedAgents.length ? ' · ' + removedAgents.length + ' removed' : '') + '</div></div>',
     '<div class="stat"><div class="n">' + goalPct + '%</div><div class="l">goal progress</div>'
       + '<div class="meter"><i style="width:' + goalPct + '%"></i></div>'
       + '<div class="sub">' + linkedDone + '/' + linked + ' linked tasks · '
@@ -379,9 +413,11 @@ async function tick() {
     '<div class="stat"><div class="n">' + reviewed.length + '</div><div class="l">files covered</div>'
       + '<div class="sub">' + peer.length + ' peer-reviewed'
       + (disputed.length ? ' · <b style="color:var(--critical)">' + disputed.length + ' disputed</b>' : '') + '</div></div>',
-    '<div class="stat"><div class="n">' + openFindings.length + '</div><div class="l">standing findings</div>'
+    '<div class="stat"><div class="n">' + actionableFindings.length + '</div><div class="l">findings to verify</div>'
       + '<div class="sub">' + (worst ? pill(worst, 'worst: ' + worst) : 'none yet')
-      + (findings.length - openFindings.length ? ' · ' + (findings.length - openFindings.length) + ' rejected' : '') + '</div></div>',
+      + (findings.filter((f) => f.status === 'rejected').length ? ' · ' + findings.filter((f) => f.status === 'rejected').length + ' rejected' : '') + '</div></div>',
+    '<div class="stat"><div class="n">' + readySubmissions.length + '</div><div class="l">ready to submit</div>'
+      + '<div class="sub">' + reportedSubmissions.length + ' already submitted</div></div>',
     '<div class="stat"><div class="n">' + tasks.filter((t) => t.status !== 'done').length + '</div><div class="l">tasks left</div>'
       + '<div class="sub">' + tasks.filter((t) => t.status === 'claimed').length + ' in progress</div></div>',
   ].join('');
@@ -401,8 +437,9 @@ async function tick() {
     + (g.detail ? '<div class="muted">' + esc(g.detail) + '</div>' : '')
     + (g.status !== 'active' ? ' ' + pill(g.status === 'done' ? 'clean' : 'skipped', g.status) : ''));
 
-  // Agents pane: liveness pill + seconds-granular heartbeat
-  fill(el('agents'), agents, (a) => {
+  // Agents pane: current members first; kicked identities are retained only as
+  // collapsed contribution history and do not inflate the live roster count.
+  const agentRow = (a, removed = false) => {
     const st = liveness(a);
     const t = ms(a.lastSeen);
     const current = tasks.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status));
@@ -410,7 +447,8 @@ async function tick() {
       || task.owner === a.name || task.lastOwner === a.name
       || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
     const completed = taken.filter((task) => task.status === 'done');
-    return who(a.name, st)
+    return who(a.name, removed ? 'offline' : st)
+      + (removed ? ' ' + pill('skipped', 'removed') : '')
       + '<div class="ink2" style="font-size:13px;margin-top:3px"><b>Current:</b> '
       + (current.length ? current.map((task) => '<code>' + esc(task.id) + '</code> ' + esc(task.title)).join('; ') : 'available — no claimed task') + '</div>'
       + '<div class="muted" style="margin-top:3px">Activity: ' + esc(a.status || 'idle') + '</div>'
@@ -421,6 +459,15 @@ async function tick() {
       + '<div class="muted">' + pill(st, st === 'active' ? 'up' : st)
       + ' <span class="hb">last activity ' + hb(a) + '</span>'
       + (st === 'offline' && t ? ' · ' + onDay(t) + at(t) : '') + '</div>';
+  };
+  el('agents').innerHTML = '<div class="queue-group"><div class="group-title">Current members <span class="count">'
+    + activeAgents.length + '</span></div>'
+    + (activeAgents.length ? activeAgents.map((a) => '<div class="row">' + agentRow(a) + '</div>').join('') : empty('No current members.')) + '</div>'
+    + '<details class="archive"' + (agentArchiveOpen ? ' open' : '') + '><summary>Removed identities <span class="count">'
+    + removedAgents.length + '</span></summary>'
+    + (removedAgents.length ? removedAgents.map((a) => '<div class="row">' + agentRow(a, true) + '</div>').join('') : empty('No removed identities.')) + '</details>';
+  el('agents').querySelector('details.archive').addEventListener('toggle', (event) => {
+    agentArchiveOpen = event.currentTarget.open;
   });
 
   const taskOrder = { claimed:0, blocked:1, open:2 };
@@ -451,7 +498,7 @@ async function tick() {
   const SEV = { critical:0, high:1, medium:2, low:3, info:4 };
   const bySeverity = (list) => [...list].sort((a, b) =>
     (SEV[a.severity] ?? 9) - (SEV[b.severity] ?? 9) || (b.ts || '').localeCompare(a.ts || ''));
-  const standingFindings = bySeverity(findings.filter((f) => f.status !== 'rejected'));
+  const standingFindings = bySeverity(actionableFindings);
   const rejectedFindings = bySeverity(findings.filter((f) => f.status === 'rejected'));
   const findingRow = (f) => '<div class="work-item finding-item">'
     + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
@@ -470,6 +517,28 @@ async function tick() {
     rejectedArchiveOpen = event.currentTarget.open;
   });
 
+  const submissionCard = (f) => '<article class="submission-card">'
+    + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
+    + '<div class="work-title">' + esc(f.title) + '</div></div>'
+    + '<div class="work-meta">' + pill(f.severity, f.severity)
+    + pill(f.status === 'reported' ? 'reviewed' : 'clean', f.status === 'reported' ? 'submitted' : 'ready')
+    + (f.by ? '<span class="muted">found by ' + esc(f.by) + '</span>' : '')
+    + (f.confirmedBy ? '<span class="muted">confirmed by ' + esc(f.confirmedBy) + '</span>' : '') + '</div>'
+    + (f.target ? '<div class="path" style="margin-top:8px">' + esc(f.target) + '</div>' : '')
+    + (f.submission?.url ? '<div class="submission-copy"><b>Report:</b> ' + esc(f.submission.url) + '</div>' : '')
+    + (f.submission?.note ? '<div class="submission-copy"><b>Submission note:</b> ' + esc(f.submission.note) + '</div>' : '')
+    + '<details class="submission-detail"><summary>Evidence and reproduction</summary>'
+    + (f.evidence ? '<div class="submission-copy"><b>Evidence</b>\\n' + esc(f.evidence) + '</div>' : '')
+    + (f.repro ? '<div class="submission-copy"><b>Reproduction</b>\\n' + esc(f.repro) + '</div>' : '')
+    + (!f.evidence && !f.repro ? empty('No evidence text recorded.') : '') + '</details></article>';
+  const readySorted = bySeverity(readySubmissions);
+  const reportedSorted = bySeverity(reportedSubmissions);
+  el('ready-count').textContent = readySorted.length;
+  el('reported-count').textContent = reportedSorted.length;
+  el('submission-summary').textContent = readySorted.length + ' ready · ' + reportedSorted.length + ' submitted';
+  el('submissions-ready').innerHTML = readySorted.length ? readySorted.map(submissionCard).join('') : empty('No confirmed findings waiting to be filed.');
+  el('submissions-reported').innerHTML = reportedSorted.length ? reportedSorted.map(submissionCard).join('') : empty('No findings marked reported yet.');
+
   const pollRow = (p) => {
     const votes = Object.values(p.votes || {}).map((vote) => vote.choice);
     const yes = votes.filter((choice) => choice === 'yes').length;
@@ -478,6 +547,7 @@ async function tick() {
     return '<div class="work-item"><div class="work-head"><code class="muted work-id">' + esc(p.id) + '</code>'
       + '<div class="work-title">' + esc(p.question) + '</div></div><div class="work-meta">'
       + pill(p.status === 'passed' ? 'clean' : p.status === 'rejected' ? 'skipped' : 'partial', p.status)
+      + (p.systemManaged ? pill('reviewed', 'automatic inactivity review') : '')
       + '<span class="muted">' + yes + ' yes · ' + no + ' no · ' + abstain + ' abstain · '
       + votes.length + '/' + (p.eligible || []).length + ' cast</span></div>'
       + (p.reason ? '<div class="ink2" style="margin-top:7px">' + esc(p.reason) + '</div>' : '')

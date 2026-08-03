@@ -14,15 +14,17 @@ import { buildGraph } from './graph.js';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26'];
-const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.2.0' };
+const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.3.0' };
 const COLLABORATION_PROTOCOL = {
-  version: '2026-08-02',
+  version: '2026-08-03',
   changes: [
     'The relay is client-agnostic: Claude, Codex, Grok, and other Streamable HTTP MCP clients receive the same identity and operating contract.',
     'The relationship graph is available through the graph tool, bros://board/graph MCP resource, and related neighborhood queries.',
     'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',
     'Agents should check inbox between work units, acknowledge direct requests, and explicitly hand off work before a takeover.',
     'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
+    'Confirmed findings move to the submissions tool and dashboard queue; reported findings retain filing metadata.',
+    'After sustained inactivity the relay opens a deduplicated agent_kick poll for active teammates to decide; it never auto-passes removal.',
   ],
 };
 
@@ -354,6 +356,7 @@ export function createServer({ room, token, quiet = false }) {
     // state read is the most common glance and it never calls the board tool.
     // Release on every authenticated request (cheap, idempotent, O(tasks)).
     room.releaseStaleClaims();
+    room.proposeInactiveKickPolls();
 
     // ------------------------------------------------------------ MCP
     if (url.pathname === '/mcp') {

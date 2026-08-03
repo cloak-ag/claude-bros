@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Room } from '../server/room.js';
+import { callTool } from '../server/tools.js';
 
 let checks = 0;
 const check = (condition, message) => {
@@ -60,6 +61,44 @@ result = room.votePoll('bob', restoreId, 'yes');
 check(result.poll.status === 'passed', 'restore poll passed');
 check(!room.isAgentBlocked('charlie').blocked, 'restored identity unblocked');
 check(room.join('charlie').ok, 'restored identity can rejoin');
+
+// The relay proposes governance instead of silently retaining or deleting an
+// inactive identity. Stale blocked work loses its owner while preserving the
+// dependency state, then active teammates decide the membership poll.
+const managed = new Room({ name: 'managed-inactivity' });
+managed.join('active');
+managed.join('inactive');
+const dependency = managed.addTask('active', { title: 'unfinished dependency' });
+const blockedWork = managed.addTask('active', {
+  title: 'blocked work owned by inactive', assignTo: 'inactive', dependsOn: dependency.id,
+});
+blockedWork.status = 'blocked';
+managed.state.agents.inactive.lastSeen = Date.now() - 31 * 60_000;
+managed.state.agents.inactive.joinedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+check(managed.releaseStaleClaims().includes(blockedWork.id), 'stale blocked ownership is released');
+assert.equal(blockedWork.owner, null); checks += 1;
+assert.equal(blockedWork.status, 'blocked'); checks += 1;
+let managedPolls = managed.proposeInactiveKickPolls();
+assert.equal(managedPolls.length, 1); checks += 1;
+assert.equal(managedPolls[0].createdBy, 'system'); checks += 1;
+assert.deepEqual(managedPolls[0].eligible, ['active']); checks += 1;
+check(managedPolls[0].action.agent === 'inactive', 'automatic poll targets the inactive membership');
+check(managed.proposeInactiveKickPolls().length === 0, 'automatic inactivity polls are deduplicated');
+result = managed.votePoll('active', managedPolls[0].id, 'yes');
+check(result.poll.status === 'passed', 'active teammate can approve the managed inactivity poll');
+check(managed.isAgentBlocked('inactive').blocked, 'passed managed poll kicks the inactive identity');
+const removedBoard = await callTool(managed, 'active', 'board', {});
+check(removedBoard.content[0].text.includes('## Removed identities'), 'agent board separates removed identities');
+check((await callTool(managed, 'active', 'send', { to: 'inactive', text: 'stale recipient' })).isError,
+  'removed identities cannot receive new direct messages');
+check((await callTool(managed, 'active', 'task_add', { title: 'bad assignment', assign_to: 'inactive' })).isError,
+  'removed identities cannot receive new tasks');
+const soloFinding = managed.addFinding('active', {
+  title: 'needs a live verifier', target: 'component', evidence: 'reproducible evidence for a real candidate', createsTask: true,
+});
+assert.equal(managed.task(soloFinding.verificationTask).owner, null); checks += 1;
+check(!managed.updateFinding('active', soloFinding.id, { status: 'confirmed' }).ok,
+  'a finding reporter cannot self-confirm a submission');
 
 // Task changes are applied exactly once when the strict-majority threshold is
 // reached. Closing cannot be used to truncate an undecided vote.

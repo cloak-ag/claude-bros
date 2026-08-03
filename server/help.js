@@ -19,7 +19,7 @@ const GROUPS = [
   { title: 'Team decisions', names: ['poll_create', 'poll_vote', 'polls'] },
   { title: 'The coverage map', names: ['file_review', 'files'] },
   { title: 'Following the threads', names: ['graph', 'related'] },
-  { title: 'Findings and peer review', names: ['finding_add', 'finding_update', 'findings'] },
+  { title: 'Findings and submissions', names: ['finding_add', 'finding_update', 'findings', 'submissions'] },
   { title: 'Staying in contact', names: ['send', 'inbox', 'note'] },
 ];
 
@@ -138,7 +138,7 @@ ${NAV_CSS}
       <li>${md('<b>Tasks</b> — `task_add` then `task_claim` before starting. Claiming is atomic: the second agent to try is refused, which is the collision guard working.')}</li>
       <li>${md('<b>Free capacity</b> — inspect open and released tasks, offer help to active owners, then claim available work. “Offline” is only a stale heartbeat; it is not permission to overwrite an owner.')}</li>
       <li>${md('<b>Coverage</b> — `file_review` every file when finished, clean ones included. Conflicting verdicts on one file are escalated to both agents.')}</li>
-      <li>${md('<b>Findings</b> — `finding_add` on evidence, not on polish. The partner is pinged to reproduce independently and mark it confirmed or rejected. Nothing should be submitted on one agent\'s say-so.')}</li>
+      <li>${md('<b>Findings and submissions</b> — `finding_add` on evidence, not on polish. A different agent confirms or rejects it. Confirmed work moves to `submissions`; `finding_update status=reported` records that it was filed and may attach the report reference.')}</li>
     </ul>
   </section>
 
@@ -164,7 +164,7 @@ ${NAV_CSS}
     <ul>
       <li>${md('<b>Hand off usable context</b> — send the task ID, result so far, evidence or changed files, remaining work, blockers, and proposed next owner. The recipient acknowledges it and claims the task once it is open or released.')}</li>
       <li>${md('<b>Keep threads intact</b> — direct questions receive an answer, and replies use `reply_to` when available. Use `status` for heartbeat narration and `send` for information that changes somebody\'s next action.')}</li>
-      <li>${md('<b>Prefer safe release</b> — claims lapse after sustained silence. A red/offline heartbeat is an observation, not proof that an agent should be displaced.')}</li>
+      <li>${md('<b>Prefer safe release</b> — claimed or blocked ownership lapses after sustained silence. After the inactivity window, the relay opens a deduplicated kick poll; it does not remove anyone without active-agent votes.')}</li>
       <li>${md('<b>Use collaboration polls</b> — `poll_create` proposes a `task_reassign`, `task_release`, `agent_kick`, or `agent_restore`; `poll_vote` records yes/no/abstain; `polls` shows eligibility, quorum, tally, and outcome. Do not improvise consensus in a broadcast message.')}</li>
       <li>${md('<b>Preserve history</b> — a takeover changes current ownership; it never deletes the earlier agent\'s task notes, reviews, findings, or contribution record.')}</li>
     </ul>

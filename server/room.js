@@ -5,6 +5,10 @@ const ONLINE_WINDOW_MS = 90_000;
 const STATUS_STALE_MS = 5 * 60_000;      // a status older than this is not "what they are doing"
 // an owner silent this long no longer holds their claim — tunable via BROS_CLAIM_STALE_MS (ms)
 const claimStaleMs = () => Number(process.env.BROS_CLAIM_STALE_MS) || 30 * 60_000;
+// Inactive membership is a team decision, not an automatic deletion. After
+// this window the relay opens a kick poll for active teammates to decide.
+const kickCandidateMs = () => Number(process.env.BROS_KICK_CANDIDATE_MS) || 30 * 60_000;
+const KICK_REJECTED_COOLDOWN_MS = 24 * 60 * 60_000;
 const DEDUP_WINDOW_MS = 5 * 60_000;      // identical text from one agent inside this window is a repeat
 const COLLISION_GRACE_MS = 30 * 60_000;  // a name is free again once its machine has been silent this long
 const DIGEST_EVERY_MESSAGES = 20;
@@ -392,7 +396,7 @@ export class Room {
     // Detect @mentions in the text
     const mentionMatch = text.match(/@([a-zA-Z0-9_-]+)/);
     const mention = mentionMatch ? mentionMatch[1] : null;
-    const isMention = mention && mention in this.state.agents;
+    const isMention = mention && mention in this.state.agents && !this.#isKicked(mention);
 
     this.state.counters.seq = (Number(this.state.counters.seq) || 0) + 1;
     const msg = {
@@ -497,14 +501,16 @@ export class Room {
   releaseStaleClaims() {
     const released = [];
     for (const task of this.state.tasks) {
-      if (task.status !== 'claimed' || !task.owner) continue;
+      if (!['claimed', 'blocked'].includes(task.status) || !task.owner) continue;
       const owner = this.state.agents[task.owner];
       const quiet = Date.now() - (owner?.lastSeen || 0);
       if (quiet < claimStaleMs()) continue;
+      const previousStatus = task.status;
       task.history.push({ ts: nowIso(), who: 'system', what: `claim lapsed — ${task.owner} silent ${Math.round(quiet / 60000)} min` });
       task.lastOwner = task.owner;
       task.owner = null;
-      task.status = 'open';
+      const dependency = task.dependsOn && this.task(task.dependsOn);
+      task.status = previousStatus === 'blocked' && dependency?.status !== 'done' ? 'blocked' : 'open';
       task.updatedAt = nowIso();
       released.push(task.id);
     }
@@ -722,6 +728,70 @@ export class Room {
       .map((poll) => this.#pollView(poll));
   }
 
+  /**
+   * Surface inactive memberships to the team without silently removing them.
+   * One system poll is opened per candidate after sustained inactivity. Active
+   * agents remain the electorate and must explicitly approve the kick.
+   */
+  proposeInactiveKickPolls() {
+    const now = Date.now();
+    const activeVoters = Object.values(this.state.agents)
+      .filter((agent) => !this.#isKicked(agent.name) && now - (agent.lastSeen || 0) < ONLINE_WINDOW_MS)
+      .map((agent) => agent.name);
+    if (!activeVoters.length) return [];
+
+    const opened = [];
+    for (const target of Object.values(this.state.agents)) {
+      if (this.#isKicked(target.name) || activeVoters.includes(target.name)) continue;
+      const lastActivity = Math.max(
+        Number(target.lastSeen) || 0,
+        Date.parse(target.joinedAt || '') || 0,
+        Date.parse(target.restoredAt || '') || 0,
+      );
+      const inactiveFor = now - lastActivity;
+      if (inactiveFor < kickCandidateMs()) continue;
+
+      const earlier = [...this.state.polls].reverse()
+        .find((poll) => poll.action?.type === 'agent_kick' && poll.action.agent === target.name);
+      if (earlier?.status === 'open') continue;
+      if (earlier?.status === 'rejected'
+        && now - Date.parse(earlier.closedAt || earlier.updatedAt || 0) < KICK_REJECTED_COOLDOWN_MS) continue;
+
+      const eligible = activeVoters.filter((name) => name !== target.name);
+      if (!eligible.length) continue;
+      const owned = this.state.tasks
+        .filter((task) => task.owner === target.name && task.status !== 'done')
+        .map((task) => task.id);
+      const minutes = Math.max(0, Math.floor(inactiveFor / 60_000));
+      const ts = nowIso();
+      const poll = {
+        id: this.#id('poll', 'P'),
+        question: `Remove inactive agent ${target.name}?`,
+        reason: `${target.name} has been inactive for ${minutes} minutes.`
+          + (owned.length ? ` Passing this poll releases ${owned.join(', ')}.` : ' Historical contributions remain attributed.'),
+        action: { type: 'agent_kick', agent: target.name },
+        createdBy: 'system',
+        createdAt: ts,
+        updatedAt: ts,
+        status: 'open',
+        eligible,
+        votes: {},
+        systemManaged: true,
+      };
+      poll.quorum = this.#pollQuorum(poll);
+      poll.requiredYes = this.#pollRequiredYes(poll);
+      this.state.polls.push(poll);
+      this.state.log.push({ ts, who: 'system', text: `opened inactivity poll ${poll.id} for ${target.name}` });
+      if (this.state.log.length > MAX_LOG) this.state.log.splice(0, this.state.log.length - MAX_LOG);
+      opened.push(this.#pollView(poll));
+    }
+    if (opened.length) {
+      this.save();
+      this.#wake();
+    }
+    return opened;
+  }
+
   votePoll(agent, id, choice) {
     const poll = this.state.polls.find((item) => item.id === id);
     if (!poll) return { ok: false, error: `No poll ${id}.` };
@@ -863,7 +933,10 @@ export class Room {
     // Auto-create a verification task for the partner
     if (createsTask) {
       // Find an agent who isn't the reporter
-      const partner = Object.keys(this.state.agents).find((a) => a !== agent);
+      const partner = Object.values(this.state.agents).find((candidate) =>
+        candidate.name !== agent
+        && !this.#isKicked(candidate.name)
+        && Date.now() - (candidate.lastSeen || 0) < ONLINE_WINDOW_MS)?.name;
       const task = this.addTask(agent, {
         title: `Verify ${finding.id}: ${title}`,
         scope: 'peer review',
@@ -879,13 +952,48 @@ export class Room {
     return finding;
   }
 
-  updateFinding(agent, id, { status, note }) {
+  updateFinding(agent, id, { status, note, submissionUrl = '', submissionNote = '' }) {
     const finding = this.state.findings.find((f) => f.id === id);
     if (!finding) return { ok: false, error: `No finding ${id}.` };
-    if (status) finding.status = status;
+    if (status === 'confirmed' && finding.status === 'unverified' && finding.by === agent) {
+      return { ok: false, error: `${id} must be confirmed by an agent other than its reporter.` };
+    }
+    if (status === 'reported' && !['confirmed', 'reported'].includes(finding.status)) {
+      return { ok: false, error: `${id} must be confirmed before it can be marked reported.` };
+    }
+    if (status && status !== finding.status) {
+      finding.history ||= [];
+      finding.history.push({ ts: nowIso(), who: agent, from: finding.status, to: status });
+      finding.status = status;
+      if (status === 'confirmed') {
+        finding.confirmedAt = nowIso();
+        finding.confirmedBy = agent;
+      }
+      if (status === 'reported') {
+        finding.reportedAt = nowIso();
+        finding.reportedBy = agent;
+      }
+    }
     if (note) finding.evidence = finding.evidence ? `${finding.evidence}\n[${agent}] ${note}` : `[${agent}] ${note}`;
+    if (submissionUrl || submissionNote || status === 'reported') {
+      finding.submission = {
+        ...(finding.submission || {}),
+        ...(submissionUrl ? { url: submissionUrl } : {}),
+        ...(submissionNote ? { note: submissionNote } : {}),
+        by: agent,
+        ts: nowIso(),
+      };
+    }
     this.save();
     return { ok: true, finding };
+  }
+
+  submissions() {
+    const severity = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+    return this.state.findings
+      .filter((finding) => ['confirmed', 'reported'].includes(finding.status))
+      .sort((a, b) => (severity[a.severity] ?? 9) - (severity[b.severity] ?? 9)
+        || String(b.reportedAt || b.confirmedAt || b.ts || '').localeCompare(String(a.reportedAt || a.confirmedAt || a.ts || '')));
   }
 
   // ----------------------------------------------------------------- goals
@@ -1210,6 +1318,7 @@ export class Room {
         done: this.tasks('done').slice(-10),
       },
       findings: this.state.findings.slice(-25),
+      submissions: this.submissions(),
       goals: this.goals(),
       coverage: this.coverage(),
       env: this.state.env,
