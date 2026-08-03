@@ -1004,6 +1004,7 @@ export class Room {
     requireText('owner', 'human submission owner');
     requireText('masterCheckedAt', 'current-master check timestamp');
     requireText('knownIssuesCheckedAt', 'known/public-issue check timestamp');
+    requireGate('reproductionVerified', 'finding independently reproduced');
     requireGate('liveOnMaster', 'confirmed live on current master');
     requireGate('inlinePoc', 'PoC is self-contained and inline');
     requireGate('impactDemonstrated', 'PoC demonstrates the claimed impact');
@@ -1017,8 +1018,8 @@ export class Room {
       state: finding.status === 'reported' ? 'reported' : blockers.length ? 'blocked' : 'ready',
       ready: finding.status === 'reported' || blockers.length === 0,
       blockers,
-      requiredComplete: 18 - blockers.length,
-      requiredTotal: 18,
+      requiredComplete: 19 - blockers.length,
+      requiredTotal: 19,
     };
   }
 
@@ -1032,6 +1033,7 @@ export class Room {
       'title', 'summary', 'details', 'poc', 'impact', 'ecosystem', 'packageName',
       'affectedVersions', 'patchedVersions', 'severity', 'cvss', 'cwe', 'commit',
       'category', 'owner', 'duplicateCheck', 'masterCheckedAt', 'knownIssuesCheckedAt',
+      'reproductionVerified',
       'liveOnMaster', 'inlinePoc', 'impactDemonstrated', 'knownIssuesChecked',
       'oneFinding', 'confidential', 'twoFactorVerified', 'windowVerified',
     ];
@@ -1047,7 +1049,7 @@ export class Room {
     return { ok: true, finding, readiness: this.submissionReadiness(finding) };
   }
 
-  updateFinding(agent, id, { status, note, submissionUrl = '', submissionNote = '' }) {
+  updateFinding(agent, id, { status, note, repro, submissionUrl = '', submissionNote = '' }) {
     const finding = this.state.findings.find((f) => f.id === id);
     if (!finding) return { ok: false, error: `No finding ${id}.` };
     if (status === 'confirmed' && finding.status === 'unverified' && finding.by === agent) {
@@ -1090,6 +1092,7 @@ export class Room {
       }
     }
     if (note) finding.evidence = finding.evidence ? `${finding.evidence}\n[${agent}] ${note}` : `[${agent}] ${note}`;
+    if (repro !== undefined) finding.repro = String(repro).trim();
     if (status === 'reported') {
       finding.submission = {
         ...(finding.submission || {}),

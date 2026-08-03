@@ -511,6 +511,7 @@ const buildSubmission = (finding, env) => {
     ['Human submission owner', present(submission.owner)],
     ['Current-master check timestamp', present(submission.masterCheckedAt)],
     ['Known/public-issue check timestamp', present(submission.knownIssuesCheckedAt)],
+    ['Finding independently reproduced', submission.reproductionVerified === true],
     ['Confirmed live on current master', submission.liveOnMaster === true],
     ['PoC is self-contained and inline', submission.inlinePoc === true],
     ['PoC demonstrates claimed impact', submission.impactDemonstrated === true],

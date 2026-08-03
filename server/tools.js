@@ -285,6 +285,7 @@ export const TOOL_DEFS = [
           enum: ['unverified', 'confirmed', 'rejected', 'reported'],
         }),
         note: str('Why. If rejecting, say what the benign explanation is.'),
+        repro: str('Replace stale or incomplete finding reproduction text with the exact steps and observed result. Required before submission readiness can be claimed.'),
         submission_url: str('Optional external report URL or identifier when status is reported.'),
         submission_note: str('Optional submission-specific note, such as program, date, or next follow-up.'),
       },
@@ -336,6 +337,7 @@ export const TOOL_DEFS = [
         duplicate_check: str('Public/known issue searches performed and why near matches are distinct.'),
         master_checked_at: str('UTC timestamp of the current-master liveness check.'),
         known_issues_checked_at: str('UTC timestamp of the final public/known-issue check.'),
+        reproduction_verified: { type: 'boolean', description: 'True only after the finding itself has been independently reproduced; this is separate from merely pasting PoC prose.' },
         live_on_master: { type: 'boolean', description: 'True only after reproducing against current moving master.' },
         inline_poc: { type: 'boolean', description: 'True only when the complete PoC is present inline in this advisory.' },
         impact_demonstrated: { type: 'boolean', description: 'True only when the PoC directly demonstrates the stated impact.' },
@@ -1040,6 +1042,7 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       const result = room.updateFinding(agent, args.id, {
         status: args.status,
         note: args.note,
+        repro: args.repro,
         submissionUrl: args.submission_url,
         submissionNote: args.submission_note,
       });
@@ -1076,6 +1079,7 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
         duplicateCheck: args.duplicate_check,
         masterCheckedAt: args.master_checked_at,
         knownIssuesCheckedAt: args.known_issues_checked_at,
+        reproductionVerified: args.reproduction_verified,
         liveOnMaster: args.live_on_master,
         inlinePoc: args.inline_poc,
         impactDemonstrated: args.impact_demonstrated,

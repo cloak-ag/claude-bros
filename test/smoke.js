@@ -241,6 +241,15 @@ check('peer confirmation is recorded', findings.text.includes('"status": "confir
 const ready = await call('beta', 'submissions');
 check('confirmed findings enter the submission queue blocked, not falsely ready',
   ready.text.includes('F1') && ready.text.includes('"state": "blocked"') && ready.text.includes('complete inline PoC'));
+check('unverified reproduction is an explicit submission blocker',
+  ready.text.includes('finding independently reproduced'));
+await call('beta', 'finding_update', {
+  id: 'F1',
+  repro: 'Create a synthetic order for account B, request it as account A, and observe the cross-account response; second account reproduced the same result.',
+});
+const refreshedFinding = await call('beta', 'findings');
+check('finding reproduction text can be corrected after verification',
+  refreshedFinding.text.includes('synthetic order for account B'));
 const prematureReport = await call('beta', 'finding_update', {
   id: 'F1', status: 'reported', submission_url: 'https://reports.example/premature',
 });
@@ -266,6 +275,7 @@ const submissionDraft = await call('beta', 'submission_update', {
   duplicate_check: 'Searched public issues and advisories for the endpoint and ownership failure; no match.',
   master_checked_at: '2026-08-05T16:01:00Z',
   known_issues_checked_at: '2026-08-05T16:02:00Z',
+  reproduction_verified: true,
   live_on_master: true,
   inline_poc: true,
   impact_demonstrated: true,
@@ -276,7 +286,7 @@ const submissionDraft = await call('beta', 'submission_update', {
   window_verified: true,
 });
 check('complete Anza fields move a candidate to ready',
-  submissionDraft.text.includes('"state": "ready"') && submissionDraft.text.includes('"complete": "18/18"'));
+  submissionDraft.text.includes('"state": "ready"') && submissionDraft.text.includes('"complete": "19/19"'));
 await call('beta', 'finding_add', {
   title: 'Second candidate still missing report gates',
   severity: 'critical',
