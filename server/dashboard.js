@@ -166,6 +166,16 @@ ${NAV_CSS}
   .submission-summary-copy { display:-webkit-box; margin-top:8px; color:var(--ink-2); font-size:12.5px;
                              overflow:hidden; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:3; }
   .blocker-count { color:var(--warning); font-size:12px; }
+  /* A submitted card whose linked advisory came back rejected/withdrawn must
+     never read like a live "submitted" item — mute it and strike the title. */
+  .submission-card.dead { border-color:var(--critical); }
+  .submission-card.dead .work-title { color:var(--muted); text-decoration:line-through; }
+  .submission-card.dead:hover { border-color:var(--critical); }
+  /* The warning that would have saved a burn: a fence (prior public
+     disclosure or an already-accepted competitor report) predates filing. */
+  .fence-warning { display:block; margin-top:9px; padding:7px 9px; border:1px solid var(--critical);
+                   border-radius:8px; background:color-mix(in srgb, var(--critical) 12%, transparent);
+                   color:var(--critical); font-size:12px; font-weight:600; line-height:1.4; overflow-wrap:anywhere; }
   @media (max-width:1050px) {
     .submission-grid { grid-template-columns:1fr; }
     .submissions-head { align-items:flex-start; flex-direction:column; }
@@ -208,6 +218,42 @@ ${NAV_CSS}
     .submission-fields { grid-template-columns:1fr; }
     .submission-field.wide { grid-column:auto; }
   }
+
+  /* Advisories: Anza's real disposition of a filed report — the ground
+     truth the Submissions panel now mirrors instead of a flat "submitted". */
+  .advisories-head { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; margin-bottom:16px; flex-wrap:wrap; }
+  .advisories-head h2 { margin-bottom:4px; }
+  .advisories-head p { margin:0; }
+  .burn-ledger { font-variant-numeric:tabular-nums; font-size:12.5px; color:var(--ink-2); text-align:right; white-space:nowrap; }
+  .burn-ledger b { color:var(--ink); font-size:15px; font-weight:650; }
+  .advisory-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .advisory-card { border:1px solid var(--line); border-radius:10px; background:var(--plane); padding:13px 14px; min-width:0; }
+  .advisory-card.dead { border-color:var(--critical); }
+  .advisory-card.dead .work-title { color:var(--muted); text-decoration:line-through; }
+  .advisory-sev { margin-top:8px; font-size:12px; color:var(--ink-2); display:flex; gap:8px; flex-wrap:wrap; }
+  .advisory-reason { margin-top:9px; padding:8px 10px; border-left:2px solid var(--rule); color:var(--ink-2);
+                      font-size:12.5px; font-style:italic; overflow-wrap:anywhere; }
+  .advisory-meta { display:flex; flex-wrap:wrap; gap:5px 12px; margin-top:9px; font-size:11.5px; color:var(--muted); }
+  .advisory-meta a { color:var(--series-1); }
+  @media (max-width:640px) {
+    .advisories-head { flex-direction:column; align-items:flex-start; }
+    .burn-ledger { text-align:left; }
+  }
+
+  /* Fences: Anza ground-truth that forecloses a class of finding — grouped by
+     kind, newest first, so a re-tread class is obvious before it burns 0.5 SOL. */
+  .fence-group + .fence-group { margin-top:18px; }
+  .fence-card { padding:11px 0; border-bottom:1px solid var(--line); }
+  .fence-card:last-child { border-bottom:0; }
+  .fence-quote { margin-top:6px; padding:8px 10px; border-left:2px solid var(--rule); color:var(--ink-2);
+                 font-size:12.5px; font-style:italic; overflow-wrap:anywhere; }
+  .fence-applies { margin-top:6px; font-size:11.5px; color:var(--muted); overflow-wrap:anywhere; }
+
+  /* False-negative cross-check: files a reviewer called clean, contradicted by
+     a merged, credited report in the same path. */
+  .contradiction-item { padding:11px 0; border-bottom:1px solid var(--line); }
+  .contradiction-item:last-child { border-bottom:0; }
+  .contradiction-item .path { color:var(--ink); font-weight:600; }
 
   /* Coverage is a full-width ledger. Each review remains a single row so the
      reviewer, verdict and note cannot become visually detached. */
@@ -312,6 +358,26 @@ ${NAV_CSS}
       <div class="submission-column"><div class="group-title">Needs report work <span class="count" id="needs-work-count">0</span></div><div class="submission-list" data-preserve-scroll id="submissions-needs-work"></div></div>
       <div class="submission-column"><div class="group-title">Submitted <span class="count" id="reported-count">0</span></div><div class="submission-list" data-preserve-scroll id="submissions-reported"></div></div>
     </div>
+  </section>
+
+  <section class="advisories-section">
+    <div class="advisories-head">
+      <div><h2>Advisories — Anza's verdict</h2><p class="muted">What actually happened to a filed report once it left the building — the ground truth the Submissions panel now mirrors.</p></div>
+      <div class="burn-ledger" id="burn-ledger"></div>
+    </div>
+    <div class="advisory-grid" id="advisories"></div>
+  </section>
+
+  <section class="fences-section">
+    <h2>§8 fences &amp; taken classes</h2>
+    <p class="muted">Public prior-art disclosures and already-accepted competitor reports that foreclose a class of finding.</p>
+    <div class="pane" id="fences" style="max-height:420px;margin-top:10px"></div>
+  </section>
+
+  <section class="contradictions-section">
+    <h2>⚠ Cleared files with accepted bugs</h2>
+    <p class="muted">A file a reviewer marked "clean" that Anza then credited someone else's accepted report against.</p>
+    <div class="pane" id="contradictions" style="max-height:360px;margin-top:10px"></div>
   </section>
 
   <section class="coverage-section">
@@ -532,6 +598,100 @@ const buildSubmission = (finding, env) => {
   };
 };
 
+// -------------------------------------------------------------- advisories
+// Anza's real disposition of a filed report. finding.status === 'reported'
+// only means WE filed it — it says nothing about what came back. These
+// helpers turn (advisory, fence) data into the badges/warnings that replace
+// the flat "submitted" label and the missing prior-art check that cost F15
+// its 0.5 SOL burn.
+const solFmt = (n) => {
+  const v = Math.round((Number(n) || 0) * 1000) / 1000;
+  return Number.isInteger(v) ? v.toFixed(1) : String(v);
+};
+const truncMid = (s, head = 8, tail = 6) => {
+  const str = String(s || '');
+  return str.length > head + tail + 1 ? str.slice(0, head) + '…' + str.slice(-tail) : str;
+};
+// "5h25m" / "1d3h" — the delta that would have told F15's filer to stop.
+// Rounded to the nearest minute (not floored) so e.g. 5h24m56s reads 5h25m.
+const humanDelta = (msDiff) => {
+  const totalMinutes = Math.max(0, Math.round(Math.abs(msDiff) / 60000));
+  const d = Math.floor(totalMinutes / 1440);
+  const h = Math.floor((totalMinutes % 1440) / 60);
+  const m = totalMinutes % 60;
+  const parts = [];
+  if (d) parts.push(d + 'd');
+  if (d || h) parts.push(h + 'h');
+  parts.push(m + 'm');
+  return parts.join('');
+};
+// Maps an advisory's real outcome onto the existing pill vocabulary — no new
+// pill kinds needed, just the honest one: rejected/withdrawn read as dead
+// (critical, struck through), accepted/paid read as good, everything else
+// (draft/pending) reads as an open, amber, in-review item.
+const ADVISORY_BADGE = {
+  rejected: { kind: 'vulnerable', dead: true },
+  withdrawn: { kind: 'skipped', dead: true },
+  accepted: { kind: 'clean', dead: false },
+  paid: { kind: 'clean', dead: false },
+  pending: { kind: 'partial', dead: false },
+};
+const advisoryBadge = (advisory) => {
+  const outcome = advisory.outcome || 'pending';
+  const info = ADVISORY_BADGE[outcome] || ADVISORY_BADGE.pending;
+  const stateLabel = String(advisory.state || 'draft').toUpperCase();
+  const outcomeLabel = outcome === 'pending'
+    ? (advisory.state === 'draft' ? 'awaiting triage' : 'pending')
+    : outcome + (advisory.closedBy ? ' by ' + advisory.closedBy : '');
+  return { kind: info.kind, dead: info.dead, label: stateLabel + ' · ' + outcomeLabel };
+};
+// A finding's effective filing timestamp: the advisory's real submission time
+// if we have one, else our own reportedAt, else null (not filed yet — any
+// applicable fence is automatically a live risk, not a historical one).
+const findingFilingTs = (finding, advisory) => {
+  const t = pick(advisory && advisory.submittedAt, finding && finding.reportedAt);
+  return t ? ms(t) : null;
+};
+// The earliest fence that both applies to this finding and predates (or has
+// no) filing — i.e. the prior-art/duplicate/by-design collision that would
+// have excluded the finding under RULES §8 before a burn was spent on it.
+const collisionFor = (finding, advisory, fences) => {
+  if (!finding) return null;
+  let best = null;
+  for (const fence of fences || []) {
+    if (!Array.isArray(fence.appliesTo) || !fence.appliesTo.includes(finding.id)) continue;
+    const pubRaw = fence.publishedAt || fence.mergedAt;
+    if (!pubRaw) continue;
+    const pub = ms(pubRaw);
+    if (!pub) continue;
+    const filingTs = findingFilingTs(finding, advisory);
+    if (filingTs !== null && pub >= filingTs) continue; // fence landed after we filed — no risk
+    if (!best || pub < best.pub) best = { fence, pub, filingTs };
+  }
+  return best;
+};
+const FENCE_RISK_LABEL = {
+  accepted_report: 'PRIOR-ACCEPTED RISK', duplicate: 'DUPLICATE RISK', by_design: 'BY-DESIGN RISK',
+};
+const collisionBanner = (collision) => {
+  if (!collision) return '';
+  const { fence, filingTs, pub } = collision;
+  const ref = fence.ref || fence.title || fence.id;
+  const label = FENCE_RISK_LABEL[fence.kind] || '§8 RISK';
+  const when = filingTs === null
+    ? 'published ' + humanDelta(Date.now() - pub) + ' ago — not yet filed'
+    : 'published ' + humanDelta(filingTs - pub) + ' before filing';
+  return '<span class="fence-warning">⚠ ' + esc(label) + ' — ' + esc(ref) + ' ' + esc(when) + '</span>';
+};
+// Files a reviewer marked "clean" that a merged, credited competitor report
+// (an accepted_report fence) later proved vulnerable in the same path —
+// the exact false negative that hit block_id_repair_service.rs.
+const pathsMatch = (a, b) => {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.endsWith('/' + b) || b.endsWith('/' + a);
+};
+
 const hasDashboardSelection = () => {
   const selection = window.getSelection && window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
@@ -580,8 +740,12 @@ const openSubmission = (id, trigger, preserveFocus = false) => {
   if (!model) return;
   openSubmissionId = id;
   if (!preserveFocus) modalReturnFocus = trigger || document.activeElement;
-  const statusKind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
-  const statusLabel = model.readiness === 'ready' ? 'ready to submit' : model.readiness === 'submitted' ? 'submitted' : 'needs report work';
+  let statusKind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
+  let statusLabel = model.readiness === 'ready' ? 'ready to submit' : model.readiness === 'submitted' ? 'submitted' : 'needs report work';
+  if (model.readiness === 'submitted' && model.advisory) {
+    const badge = advisoryBadge(model.advisory);
+    statusKind = badge.kind; statusLabel = badge.label;
+  }
   el('submission-modal-kicker').textContent = model.id + ' · Anza bounty report';
   el('submission-modal-title').textContent = model.values.title || model.id;
   el('submission-modal-status').innerHTML = pill(statusKind, statusLabel)
@@ -616,6 +780,16 @@ const openSubmission = (id, trigger, preserveFocus = false) => {
     + modalField('Finding reproduction (not a substitute for inline PoC)', f.repro, { wide:true, poc:true })
     + modalField('Report reference', f.submission?.url)
     + modalField('Submission note', f.submission?.note)
+    + (model.advisory ? modalField('Anza verdict', String(model.advisory.state || 'draft').toUpperCase() + ' · '
+        + (model.advisory.outcome || 'pending') + (model.advisory.closedBy ? ' by ' + model.advisory.closedBy : '')) : '')
+    + (model.advisory && model.advisory.outcomeReason ? modalField('Anza outcome reason (verbatim)', model.advisory.outcomeReason, { wide:true }) : '')
+    + (model.advisory ? modalField('Anza severity vs ours', pick(model.advisory.anzaSeverity, '—') + ' vs '
+        + pick(model.advisory.ourSeverity, model.values.severity, '—')) : '')
+    + (model.advisory ? modalField('Burn', (present(model.advisory.burnSol) ? solFmt(model.advisory.burnSol) + ' SOL' : '—')
+        + (model.advisory.burnTx ? ' · tx ' + truncMid(model.advisory.burnTx) : '')) : '')
+    + (model.advisory && model.advisory.url ? '<div class="submission-field wide"><span class="field-label">GHSA advisory</span>'
+        + '<div class="field-value"><a href="' + esc(model.advisory.url) + '" target="_blank" rel="noreferrer noopener">' + esc(model.advisory.ghsaId) + '</a></div></div>' : '')
+    + (model.fenceHit ? '<div class="submission-field wide"><span class="field-label">§8 / prior-art risk</span>' + collisionBanner(model.fenceHit) + '</div>' : '')
     + '<div class="submission-field wide"><span class="field-label">Readiness checklist</span>' + checklist + '</div>'
     + '<div class="submission-field wide"><span class="field-label">Blockers</span>' + blockers + '</div>'
     + '</div>';
@@ -684,9 +858,21 @@ async function tick() {
   const files = Object.values(s.files || {});
   const findings = s.findings || [];
   const polls = s.polls || [];
+  // Advisories/fences are the ground truth a plain finding.status never
+  // learns: what Anza actually did with a filed report, and what prior-art
+  // already forecloses a class of finding.
+  const advisories = s.advisories || [];
+  const fences = s.fences || [];
+  const advisoryByFindingId = new Map(advisories.filter((a) => a.findingId).map((a) => [a.findingId, a]));
   const submissionCandidates = Array.isArray(s.submissions) ? s.submissions
     : findings.filter((f) => ['confirmed', 'reported'].includes(f.status));
   const submissionModels = submissionCandidates.map((f) => buildSubmission(f, s.env || {}));
+  // Attach the real outcome + collision check to every model up front so the
+  // card renderer, the modal, and the readiness summary all read one source.
+  submissionModels.forEach((model) => {
+    model.advisory = advisoryByFindingId.get(model.id) || null;
+    model.fenceHit = collisionFor(model.finding, model.advisory, fences);
+  });
   submissionById = new Map(submissionModels.map((model) => [String(model.id), model]));
   const readySubmissions = submissionModels.filter((model) => model.readiness === 'ready');
   const needsWorkSubmissions = submissionModels.filter((model) => model.readiness === 'needs_work');
@@ -852,14 +1038,18 @@ async function tick() {
     (SEV[a.severity] ?? 9) - (SEV[b.severity] ?? 9) || (b.ts || '').localeCompare(a.ts || ''));
   const standingFindings = bySeverity(actionableFindings);
   const rejectedFindings = bySeverity(findings.filter((f) => f.status === 'rejected'));
-  const findingRow = (f) => '<div class="work-item finding-item">'
-    + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
-    + '<div class="work-title">' + esc(f.title) + '</div></div>'
-    + '<div class="work-meta">' + pill(f.severity, f.severity)
-    + pill(f.status === 'confirmed' ? 'clean' : f.status === 'rejected' ? 'skipped' : 'partial', f.status)
-    + (f.by ? '<span class="muted">reported by ' + esc(f.by) + '</span>' : '') + '</div>'
-    + (f.target ? '<div class="path">' + esc(f.target) + '</div>' : '')
-    + '</div>';
+  const findingRow = (f) => {
+    const collision = collisionFor(f, advisoryByFindingId.get(f.id) || null, fences);
+    return '<div class="work-item finding-item">'
+      + '<div class="work-head"><code class="muted work-id">' + esc(f.id) + '</code>'
+      + '<div class="work-title">' + esc(f.title) + '</div></div>'
+      + '<div class="work-meta">' + pill(f.severity, f.severity)
+      + pill(f.status === 'confirmed' ? 'clean' : f.status === 'rejected' ? 'skipped' : 'partial', f.status)
+      + (f.by ? '<span class="muted">reported by ' + esc(f.by) + '</span>' : '') + '</div>'
+      + (f.target ? '<div class="path">' + esc(f.target) + '</div>' : '')
+      + (collision ? collisionBanner(collision) : '')
+      + '</div>';
+  };
   el('findings').innerHTML = '<div class="queue-group"><div class="group-title">Standing &amp; actionable <span class="count">'
     + standingFindings.length + '</span></div>'
     + (standingFindings.length ? standingFindings.map(findingRow).join('') : empty('No standing findings.')) + '</div>'
@@ -871,18 +1061,31 @@ async function tick() {
 
   const submissionCard = (model) => {
     const f = model.finding;
-    const kind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
-    const label = model.readiness === 'ready' ? 'ready' : model.readiness === 'submitted' ? 'submitted' : 'blocked';
-    return '<button type="button" class="submission-card" data-submission-id="' + esc(model.id)
+    let kind = model.readiness === 'ready' ? 'clean' : model.readiness === 'submitted' ? 'reviewed' : 'partial';
+    let label = model.readiness === 'ready' ? 'ready' : model.readiness === 'submitted' ? 'submitted' : 'blocked';
+    let dead = false;
+    let metaExtra = '<span class="muted">' + model.requiredComplete + '/' + model.requiredTotal + ' required checks</span>';
+    let copy = model.values.summary ? '<span class="submission-summary-copy">' + esc(model.values.summary) + '</span>' : '';
+    // A submitted item's real state is its advisory outcome, not the flat
+    // "submitted" label — F15 (closed/rejected) must never render like F18
+    // (still an untriaged draft).
+    if (model.readiness === 'submitted' && model.advisory) {
+      const badge = advisoryBadge(model.advisory);
+      kind = badge.kind; label = badge.label; dead = badge.dead;
+      metaExtra = '<span class="muted">' + esc(model.advisory.ghsaId) + '</span>';
+      if (model.advisory.outcomeReason) copy = '<span class="submission-summary-copy">“' + esc(model.advisory.outcomeReason) + '”</span>';
+    }
+    return '<button type="button" class="submission-card' + (dead ? ' dead' : '') + '" data-submission-id="' + esc(model.id)
       + '" data-focus-key="submission-' + esc(model.id) + '">'
       + '<div class="work-head"><code class="muted work-id">' + esc(model.id) + '</code>'
       + '<div class="work-title">' + esc(model.values.title || f.title) + '</div></div>'
       + '<div class="work-meta">' + (model.rank ? '<span class="muted">rank #' + model.rank + '</span>' : '')
       + pill(model.values.severity, model.values.severity)
       + pill(kind, label)
-      + '<span class="muted">' + model.requiredComplete + '/' + model.requiredTotal + ' required checks</span></div>'
-      + (model.values.summary ? '<span class="submission-summary-copy">' + esc(model.values.summary) + '</span>' : '')
-      + (model.blockers.length ? '<span class="blocker-count">' + model.blockers.length + ' blocker(s) · open for details</span>' : '')
+      + metaExtra + '</div>'
+      + copy
+      + (model.blockers.length && model.readiness !== 'submitted' ? '<span class="blocker-count">' + model.blockers.length + ' blocker(s) · open for details</span>' : '')
+      + (model.fenceHit ? collisionBanner(model.fenceHit) : '')
       + '</button>';
   };
   const submissionSeverity = (model) => SEV[model.values.severity] ?? 9;
@@ -901,10 +1104,104 @@ async function tick() {
   el('ready-count').textContent = readySorted.length;
   el('needs-work-count').textContent = needsWorkSorted.length;
   el('reported-count').textContent = reportedSorted.length;
-  el('submission-summary').textContent = readySorted.length + ' ready · ' + needsWorkSorted.length + ' blocked · ' + reportedSorted.length + ' submitted · ranked by readiness';
+  // Readiness honesty: a candidate is never presented as cleanly "ready" while
+  // an unresolved fence still applies to it — say so in the summary too.
+  const readyAtRisk = readySorted.filter((model) => model.fenceHit).length;
+  el('submission-summary').textContent = readySorted.length + ' ready · ' + needsWorkSorted.length + ' blocked · ' + reportedSorted.length + ' submitted'
+    + (readyAtRisk ? ' · ⚠ ' + readyAtRisk + ' ready but §8-at-risk' : '') + ' · ranked by readiness';
   el('submissions-ready').innerHTML = readySorted.length ? readySorted.map(submissionCard).join('') : empty('No submission is ready.');
   el('submissions-needs-work').innerHTML = needsWorkSorted.length ? needsWorkSorted.map(submissionCard).join('') : empty('No blocked candidates.');
   el('submissions-reported').innerHTML = reportedSorted.length ? reportedSorted.map(submissionCard).join('') : empty('No findings marked reported yet.');
+
+  // ---- advisories: Anza's real disposition, plus the burn ledger
+  const advisoryCard = (advisory) => {
+    const badge = advisoryBadge(advisory);
+    const collision = advisory.findingId ? collisionFor({ id: advisory.findingId }, advisory, fences) : null;
+    const sevLine = (advisory.anzaSeverity || advisory.ourSeverity)
+      ? '<div class="advisory-sev">' + (advisory.ourSeverity ? 'our: ' + pill(advisory.ourSeverity, advisory.ourSeverity) : '')
+        + (advisory.anzaSeverity ? ' anza: ' + pill(advisory.anzaSeverity, advisory.anzaSeverity) : '') + '</div>' : '';
+    return '<article class="advisory-card' + (badge.dead ? ' dead' : '') + '">'
+      + '<div class="work-head"><code class="muted work-id">' + esc(advisory.ghsaId) + '</code>'
+      + '<div class="work-title">' + esc(advisory.title || advisory.ghsaId) + '</div></div>'
+      + '<div class="work-meta">' + pill(badge.kind, badge.label)
+      + (advisory.findingId ? '<code class="muted">' + esc(advisory.findingId) + '</code>' : '') + '</div>'
+      + sevLine
+      + (collision ? collisionBanner(collision) : '')
+      + (advisory.outcomeReason ? '<div class="advisory-reason">“' + esc(advisory.outcomeReason) + '”</div>' : '')
+      + '<div class="advisory-meta">'
+      + (advisory.product ? '<span>' + esc(advisory.product) + '</span>' : '')
+      + (advisory.affectedVersions ? '<span>affected ' + esc(advisory.affectedVersions) + '</span>' : '')
+      + (advisory.patchedVersions ? '<span>patched ' + esc(advisory.patchedVersions) + '</span>' : '')
+      + (advisory.submittedAt ? '<span>filed ' + esc(onDay(advisory.submittedAt) + at(advisory.submittedAt)) + ' UTC−3</span>' : '')
+      + (advisory.burnTx ? '<span class="mono">tx ' + esc(truncMid(advisory.burnTx)) + '</span>' : '')
+      + (present(advisory.burnSol) ? '<span>' + esc(solFmt(advisory.burnSol)) + ' SOL</span>' : '')
+      + (advisory.url ? '<a href="' + esc(advisory.url) + '" target="_blank" rel="noreferrer noopener">advisory ↗</a>' : '')
+      + '</div>'
+      + '</article>';
+  };
+  el('advisories').innerHTML = advisories.length ? advisories.map(advisoryCard).join('') : empty('No advisories recorded yet.');
+  {
+    const totalSol = advisories.reduce((a, adv) => a + (Number(adv.burnSol) || 0), 0);
+    const counts = { pending:0, rejected:0, accepted:0, paid:0, withdrawn:0 };
+    advisories.forEach((adv) => { const k = Object.prototype.hasOwnProperty.call(counts, adv.outcome) ? adv.outcome : 'pending'; counts[k] += 1; });
+    const parts = ['rejected','pending','accepted','paid'].map((k) => counts[k] + ' ' + k);
+    el('burn-ledger').innerHTML = '<b>' + esc(solFmt(totalSol)) + ' SOL burned</b> · ' + parts.map(esc).join(' · ');
+  }
+
+  // ---- §8 fences & taken classes, grouped by kind, newest first
+  const FENCE_KIND_LABEL = {
+    section8_issue: '§8 — public issue', section8_pr: '§8 — public PR',
+    accepted_report: 'Accepted competitor report', by_design: 'By design', duplicate: 'Duplicate',
+  };
+  const FENCE_KIND_ORDER = ['section8_issue', 'section8_pr', 'accepted_report', 'by_design', 'duplicate'];
+  const fenceCard = (fence) => {
+    const when = fence.publishedAt || fence.mergedAt;
+    return '<div class="fence-card">'
+      + '<div class="work-head"><code class="muted work-id">' + esc(fence.id) + '</code>'
+      + '<div class="work-title">' + (fence.url
+          ? '<a href="' + esc(fence.url) + '" target="_blank" rel="noreferrer noopener">' + esc(fence.ref || fence.title || fence.id) + '</a>'
+          : esc(fence.ref || fence.title || fence.id)) + '</div></div>'
+      + (fence.title && fence.ref ? '<div class="muted" style="margin-top:3px">' + esc(fence.title) + '</div>' : '')
+      + (fence.quote ? '<div class="fence-quote">“' + esc(fence.quote) + '”</div>' : '')
+      + '<div class="fence-applies">' + (when ? esc(onDay(when) + at(when)) + ' UTC−3' : '')
+      + (fence.appliesTo && fence.appliesTo.length ? (when ? ' · ' : '') + 'applies to ' + esc(fence.appliesTo.join(', ')) : '')
+      + (fence.paths && fence.paths.length ? (when || (fence.appliesTo && fence.appliesTo.length) ? ' · ' : '') + esc(fence.paths.join(', ')) : '')
+      + '</div>'
+      + (fence.note ? '<div class="muted" style="margin-top:5px">' + esc(fence.note) + '</div>' : '')
+      + '</div>';
+  };
+  const fenceGroups = new Map();
+  fences.forEach((fn) => { const k = fn.kind || 'section8_issue'; if (!fenceGroups.has(k)) fenceGroups.set(k, []); fenceGroups.get(k).push(fn); });
+  const orderedFenceKinds = [...fenceGroups.keys()].sort((a, b) => {
+    const ia = FENCE_KIND_ORDER.indexOf(a), ib = FENCE_KIND_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  el('fences').innerHTML = fences.length
+    ? orderedFenceKinds.map((k) => '<div class="fence-group"><div class="group-title">' + esc(FENCE_KIND_LABEL[k] || k)
+        + ' <span class="count">' + fenceGroups.get(k).length + '</span></div>'
+        + fenceGroups.get(k).map(fenceCard).join('') + '</div>').join('')
+    : empty('No fences recorded yet.');
+
+  // ---- false-negative cross-check: files cleared by review, contradicted by
+  // a merged, credited competitor report in the same path.
+  const acceptedFences = fences.filter((fn) => fn.kind === 'accepted_report');
+  const contradictions = [];
+  for (const file of files) {
+    const cleanReviewers = [...new Set((file.reviews || []).filter((r) => r.verdict === 'clean').map((r) => r.agent))];
+    if (!cleanReviewers.length) continue;
+    for (const fn of acceptedFences) {
+      if ((fn.paths || []).some((p) => pathsMatch(file.path, p))) contradictions.push({ path: file.path, reviewers: cleanReviewers, fence: fn });
+    }
+  }
+  el('contradictions').innerHTML = contradictions.length
+    ? contradictions.map((c) => '<div class="contradiction-item">'
+        + '<div class="path">' + esc(c.path) + '</div>'
+        + '<div class="muted" style="margin-top:4px">marked clean by ' + esc(c.reviewers.join(', ')) + '</div>'
+        + '<div class="muted" style="margin-top:4px">contradicted by <code class="mono">' + esc(c.fence.ref || c.fence.id) + '</code>'
+        + (c.fence.url ? ' — <a href="' + esc(c.fence.url) + '" target="_blank" rel="noreferrer noopener">' + esc(c.fence.title || 'view') + '</a>' : '') + '</div>'
+        + (c.fence.quote ? '<div class="fence-quote">“' + esc(c.fence.quote) + '”</div>' : '')
+        + '</div>').join('')
+    : empty('No contradictions — cleared files are holding.');
 
   const pollRow = (p) => {
     const votes = Object.values(p.votes || {}).map((vote) => vote.choice);

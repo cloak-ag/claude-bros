@@ -55,14 +55,14 @@ check('initialize records client implementation without making it a role',
   room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 27, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 31, `got ${tools.result.tools.length}`);
 const humanToolsRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
 });
 const humanTools = await humanToolsRes.json();
 check('only the human credential discovers message moderation tools',
-  humanTools.result.tools.length === 29
+  humanTools.result.tools.length === 33
     && ['message_edit', 'message_delete'].every((name) => humanTools.result.tools.some((tool) => tool.name === name))
     && !tools.result.tools.some((tool) => tool.name.startsWith('message_')));
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
@@ -305,6 +305,45 @@ await call('alpha', 'finding_update', {
 const reported = await call('beta', 'submissions', { status: 'reported' });
 check('reported findings retain submission metadata',
   reported.text.includes('https://reports.example/F1') && reported.text.includes('Filed with the program'));
+
+console.log('\n  advisories & fences');
+const advisoryCreate = await call('alpha', 'advisory_upsert', {
+  ghsa_id: 'GHSA-test-0001',
+  finding_id: 'F1',
+  title: 'Order endpoint exposes another customer’s order',
+  state: 'closed',
+  outcome: 'rejected',
+  anza_severity: 'low',
+  our_severity: 'high',
+  outcome_reason: 'This is intentional / by design.',
+  burn_tx: 'testtxsig123',
+  burn_sol: 0.5,
+  submitted_at: '2026-08-05T18:12:31Z',
+});
+check('advisory_upsert creates a new advisory', !advisoryCreate.isError && advisoryCreate.text.includes('GHSA-test-0001') && advisoryCreate.text.includes('"outcome": "rejected"'));
+const advisoryUpdate = await call('alpha', 'advisory_upsert', { ghsa_id: 'GHSA-test-0001', credit_state: 'confirmed' });
+check('advisory_upsert updates by ghsa_id instead of duplicating', advisoryUpdate.text.includes('"creditState": "confirmed"'));
+const advisoriesList = await call('beta', 'advisories');
+check('advisories lists what was upserted', advisoriesList.text.includes('GHSA-test-0001') && (advisoriesList.text.match(/GHSA-test-0001/g) || []).length === 1);
+const missingGhsa = await call('alpha', 'advisory_upsert', {});
+check('advisory_upsert requires ghsa_id', missingGhsa.isError);
+
+const fenceCreate = await call('beta', 'fence_add', {
+  kind: 'section8_issue',
+  ref: 'agave#14335',
+  url: 'https://github.com/anza-xyz/agave/issues/14335',
+  title: 'Reduce the bound of vote ingest in BLS sigverify',
+  quote: 'we admit votes from root_slot - 8 to root_slot + 30k.',
+  published_at: '2026-08-05T12:47:35Z',
+  applies_to: ['F1'],
+  paths: ['bls-sigverify/src/bls_sigverifier.rs'],
+  note: 'Published before F1 was filed.',
+});
+check('fence_add records a §8 fence with an id', /"id": "FN\d+"/.test(fenceCreate.text) && fenceCreate.text.includes('agave#14335'));
+const fencesList = await call('alpha', 'fences');
+check('fences lists what was added', fencesList.text.includes('agave#14335') && fencesList.text.includes('section8_issue'));
+const missingKind = await call('beta', 'fence_add', { ref: 'agave#1' });
+check('fence_add requires kind', missingKind.isError);
 
 console.log('\n  finding → task auto-link');
 const xssFindingBefore = room.state.findings.length;
@@ -800,6 +839,61 @@ check('dashboard fetches state with a real token query',
   pageText.includes("'?token=' + encodeURIComponent(token)") && !pageText.includes("'&' + location.search"), fetchSource.slice(0, 80));
 const stateFetch = await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
 check('the dashboard state endpoint is live', stateFetch.room === room.name);
+
+console.log('\n  false-negative cross-check (derived, client-rendered)');
+// The exact false negative that hit block_id_repair_service.rs: five agents
+// call a file "clean", then Anza credits an OTHER hunter's accepted report
+// in that same path. Seed that scenario plus one ordinary clean file that is
+// NOT fenced, so a false positive would also be caught.
+for (const reviewer of ['reviewer-1', 'reviewer-2', 'reviewer-3', 'reviewer-4', 'reviewer-5']) {
+  room.reviewFile(reviewer, {
+    path: 'core/src/repair/block_id_repair_service.rs',
+    verdict: 'clean',
+    note: `${reviewer}: audited proof size handling, looks fine.`,
+  });
+}
+room.reviewFile('reviewer-1', { path: 'core/src/banking_stage.rs', verdict: 'clean', note: 'nothing unusual.' });
+const crossCheckFence = room.addFence('beta', {
+  kind: 'accepted_report',
+  ref: 'agave#99999',
+  url: 'https://github.com/anza-xyz/agave/pull/99999',
+  title: 'block id repair: enforce strict proof size check',
+  quote: 'A bug bounty report showed the responder could shorten the proof.',
+  paths: ['core/src/repair/block_id_repair_service.rs'],
+  note: 'Competitor report ACCEPTED — do not rework.',
+});
+const crossCheckState = await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
+check('the fenced path and its 5 clean reviews are both live on /api/state',
+  crossCheckState.fences.some((f) => f.ref === 'agave#99999')
+    && crossCheckState.files['core/src/repair/block_id_repair_service.rs']?.reviews.filter((r) => r.verdict === 'clean').length === 5);
+// Run the ACTUAL shipped cross-check — extracted verbatim out of the
+// dashboard's client script, not a re-implementation — against that live
+// data, exactly as the dashboard's tick() does before writing #contradictions.
+const pathsMatchSrc = pageText.match(/const pathsMatch = \(a, b\) => \{[\s\S]*?\n\};/)?.[0] || '';
+const contradictionSrc = pageText.match(/const acceptedFences = fences\.filter[\s\S]*?: empty\('No contradictions[^']*'\);/)?.[0] || '';
+check('extracted the real pathsMatch() and false-negative scan source from the shipped dashboard',
+  Boolean(pathsMatchSrc) && Boolean(contradictionSrc),
+  `pathsMatch ${pathsMatchSrc.length} chars, scan ${contradictionSrc.length} chars`);
+const runContradictionScan = new Function('files', 'fences', 'esc', 'empty', `
+  ${pathsMatchSrc}
+  ${contradictionSrc.replace("el('contradictions').innerHTML =", 'var html =')}
+  return html;
+`);
+const contradictionHtml = runContradictionScan(
+  Object.values(crossCheckState.files), crossCheckState.fences,
+  (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])),
+  (msg) => `<div class="empty">${msg}</div>`,
+);
+check('cleared-files cross-check flags block_id_repair_service.rs with all 5 reviewers and the accepted-report fence',
+  contradictionHtml.includes('core/src/repair/block_id_repair_service.rs')
+    && contradictionHtml.includes('reviewer-1, reviewer-2, reviewer-3, reviewer-4, reviewer-5')
+    && contradictionHtml.includes('agave#99999')
+    && (contradictionHtml.match(/contradiction-item/g) || []).length === 1,
+  contradictionHtml.slice(0, 200));
+check('cleared-files cross-check does not false-positive on an unfenced clean file',
+  !contradictionHtml.includes('banking_stage.rs'));
+check('empty state reads exactly "No contradictions — cleared files are holding."',
+  runContradictionScan([], [], (s) => s, (msg) => msg) === 'No contradictions — cleared files are holding.');
 
 console.log('\n  CLI argument layer — the subcommand must not leak into args');
 // Regression for the argv split: `join <url>` must record the URL, not "join",

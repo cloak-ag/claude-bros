@@ -47,7 +47,9 @@ export class Room {
       digests: [],
       log: [],
       aliases: {},
-      counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 0, seq: 0 },
+      advisories: [],
+      fences: [],
+      counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 0, seq: 0, fence: 0 },
     };
     // Synchronous load for file-based or pure in-memory (used by tests);
     // async init() for PostgreSQL
@@ -152,7 +154,7 @@ export class Room {
     // conservative here: a missing collection is healed, while existing audit
     // history is never discarded.
     let healed = 0;
-    for (const key of ['messages', 'tasks', 'findings', 'goals', 'polls', 'digests', 'log']) {
+    for (const key of ['messages', 'tasks', 'findings', 'goals', 'polls', 'digests', 'log', 'advisories', 'fences']) {
       if (!Array.isArray(this.state[key])) { this.state[key] = []; healed += 1; }
     }
     if (!this.state.agents || typeof this.state.agents !== 'object' || Array.isArray(this.state.agents)) { this.state.agents = {}; healed += 1; }
@@ -163,11 +165,17 @@ export class Room {
     const kinds = [
       ['goal', 'G', this.state.goals, (from, to) => this.state.tasks.forEach((t) => { if (t.goal === from) t.goal = to; })],
       ['task', 'T', this.state.tasks, null],
-      ['finding', 'F', this.state.findings, (from, to) => Object.values(this.state.files).forEach((f) => {
-        f.findings = (f.findings || []).map((id) => (id === from ? to : id));
-      })],
+      ['finding', 'F', this.state.findings, (from, to) => {
+        Object.values(this.state.files).forEach((f) => {
+          f.findings = (f.findings || []).map((id) => (id === from ? to : id));
+        });
+        this.state.fences.forEach((fence) => {
+          if (Array.isArray(fence.appliesTo)) fence.appliesTo = fence.appliesTo.map((id) => (id === from ? to : id));
+        });
+      }],
       ['message', 'M', this.state.messages, null],
       ['poll', 'P', this.state.polls, null],
+      ['fence', 'FN', this.state.fences, null],
     ];
 
     let repaired = 0;
@@ -1126,6 +1134,95 @@ export class Room {
       });
   }
 
+  // -------------------------------------------------------------- advisories
+  //
+  // Anza's real-world disposition of a submitted finding: what they filed it
+  // as, what it turned out to be worth, and — critically — the verbatim
+  // reason when they close it. `finding.status` only tracks *our* internal
+  // review pipeline (unverified -> confirmed -> reported); it never learns
+  // what happens after a report leaves the building. An advisory is that
+  // missing half, one row per GHSA advisory, upserted as Anza's page changes.
+
+  /**
+   * Create or update an advisory by its GHSA id (the natural unique key —
+   * Anza mints it once per filed report, so it is a safer identity than a
+   * locally-sequential counter would be across a relay restart/merge).
+   */
+  upsertAdvisory(agent, patch = {}) {
+    const ghsaId = String(patch.ghsaId || '').trim();
+    if (!ghsaId) return { ok: false, error: 'ghsaId is required.' };
+    const allowed = [
+      'findingId', 'title', 'url', 'state', 'outcome', 'anzaSeverity', 'ourSeverity',
+      'product', 'affectedVersions', 'patchedVersions', 'outcomeReason', 'closedBy',
+      'creditState', 'burnTx', 'burnSol', 'submittedAt',
+    ];
+    let advisory = this.state.advisories.find((a) => a.ghsaId === ghsaId);
+    const created = !advisory;
+    if (!advisory) {
+      advisory = { ghsaId, state: 'draft', outcome: 'pending', createdAt: nowIso() };
+      this.state.advisories.push(advisory);
+    }
+    for (const key of allowed) {
+      if (patch[key] !== undefined) advisory[key] = patch[key];
+    }
+    advisory.updatedBy = agent;
+    advisory.updatedAt = nowIso();
+    this.touch(agent);
+    this.save();
+    return { ok: true, advisory, created };
+  }
+
+  /** All advisories, most recently submitted (or updated) first. */
+  advisories() {
+    return [...this.state.advisories].sort((a, b) =>
+      String(b.submittedAt || b.updatedAt || b.createdAt || '')
+        .localeCompare(String(a.submittedAt || a.updatedAt || a.createdAt || '')));
+  }
+
+  /** Lookup an advisory linked to a given finding id, if any. */
+  advisoryForFinding(findingId) {
+    return this.state.advisories.find((a) => a.findingId === findingId) || null;
+  }
+
+  // ------------------------------------------------------------------ fences
+  //
+  // A "fence" is a piece of Anza ground-truth that forecloses a class of
+  // finding: a public §8 issue/PR published before we filed (prior-art —
+  // RULES §8 excludes it), or a competitor's report Anza already accepted in
+  // a given file (reworking that class wastes a burn). Fences are additive,
+  // append-only evidence records; nothing here decides eligibility — the
+  // consumer (dashboard/tools) compares `publishedAt`/`mergedAt` against a
+  // finding's `submittedAt` to render the collision warning.
+
+  addFence(agent, patch = {}) {
+    const fence = {
+      id: this.#id('fence', 'FN'),
+      kind: patch.kind || 'section8_issue',
+      ref: patch.ref || '',
+      url: patch.url || '',
+      title: patch.title || '',
+      quote: patch.quote || '',
+      publishedAt: patch.publishedAt || null,
+      mergedAt: patch.mergedAt || null,
+      appliesTo: Array.isArray(patch.appliesTo) ? patch.appliesTo : [],
+      paths: Array.isArray(patch.paths) ? patch.paths : [],
+      note: patch.note || '',
+      addedBy: agent,
+      createdAt: nowIso(),
+    };
+    this.state.fences.push(fence);
+    this.touch(agent);
+    this.save();
+    return fence;
+  }
+
+  /** All fences, most recently published (falling back to added) first. */
+  fences() {
+    return [...this.state.fences].sort((a, b) =>
+      String(b.publishedAt || b.mergedAt || b.createdAt || '')
+        .localeCompare(String(a.publishedAt || a.mergedAt || a.createdAt || '')));
+  }
+
   // ----------------------------------------------------------------- goals
 
   addGoal(agent, { title, detail = '' }) {
@@ -1449,6 +1546,8 @@ export class Room {
       },
       findings: this.state.findings.slice(-25),
       submissions: this.submissions(),
+      advisories: this.advisories(),
+      fences: this.fences(),
       goals: this.goals(),
       coverage: this.coverage(),
       env: this.state.env,

@@ -452,7 +452,12 @@ export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_
     if (url.pathname === '/api/graph') return cachedJson(req, res, buildGraph(room.state), room.version, 'graph');
     if (url.pathname === '/api/board') return cachedJson(req, res, room.board(agent), room.version, `board-${agent || '-'}`);
     if (url.pathname === '/api/state') {
-      return cachedJson(req, res, { ...room.state, submissions: room.submissions() }, room.version, 'state');
+      return cachedJson(req, res, {
+        ...room.state,
+        submissions: room.submissions(),
+        advisories: room.advisories(),
+        fences: room.fences(),
+      }, room.version, 'state');
     }
     if (url.pathname === '/api/auth') return json(res, 200, { human: isHuman });
 

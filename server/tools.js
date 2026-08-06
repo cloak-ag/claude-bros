@@ -351,6 +351,75 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: 'advisory_upsert',
+    title: "Record Anza's verdict on a filed advisory",
+    description:
+      'Upsert (by ghsa_id) what actually happened to a submitted advisory on Anza\'s side — draft/closed/published, accepted/rejected/paid/withdrawn, their severity call, and above all the VERBATIM reason they give when they close or pay it. finding_add/finding_update only track OUR internal review pipeline; they never learn what Anza does after a report leaves the building, which is how F15 (closed/rejected, 0.5 SOL burned) ended up showing on the dashboard identically to F18 (still an untriaged draft). Call this the moment an advisory\'s GitHub Security Advisory page changes state so the Submissions panel stops lying about what is actually still alive.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ghsa_id: str('REQUIRED unique key, e.g. "GHSA-5w47-2m67-5mm7" — the id GitHub mints once per filed report. Upserts: same ghsa_id updates the existing record instead of creating a duplicate.'),
+        finding_id: str('Our internal finding id this advisory reports, e.g. "F15".'),
+        title: str('Advisory title as filed.'),
+        url: str('Advisory URL, e.g. github.com/anza-xyz/alpenglow/security/advisories/GHSA-...'),
+        state: str('draft | closed | published', { enum: ['draft', 'closed', 'published'] }),
+        outcome: str('pending | rejected | accepted | paid | withdrawn', {
+          enum: ['pending', 'rejected', 'accepted', 'paid', 'withdrawn'],
+        }),
+        anza_severity: str('Severity Anza assigned, if triaged.'),
+        our_severity: str('Severity we originally claimed.'),
+        product: str('Affected product/component, e.g. "bls-sigverify".'),
+        affected_versions: str('Affected version/range as stated in the advisory.'),
+        patched_versions: str('Patched version/range, or "None" if unpatched.'),
+        outcome_reason: str('VERBATIM maintainer words explaining the disposition — do not paraphrase or summarize. This is quoted directly on the dashboard so the team sees exactly what Anza said, e.g. why a finding was rejected as by-design or a duplicate.'),
+        closed_by: str('GitHub handle of the Anza maintainer who closed/decided it.'),
+        credit_state: str('Bounty credit/payout status as Anza reports it, e.g. "pending", "confirmed".'),
+        burn_tx: str('Solana transaction signature for the 0.5 SOL submission burn.'),
+        burn_sol: { type: 'number', description: 'SOL amount burned filing this advisory (normally 0.5).' },
+        submitted_at: str('UTC timestamp the advisory was actually filed with Anza.'),
+      },
+      required: ['ghsa_id'],
+    },
+  },
+  {
+    name: 'advisories',
+    title: "List every advisory and Anza's disposition",
+    description:
+      'Read every advisory ever filed with its full Anza disposition — state, outcome, verbatim outcome_reason, severity deltas, and the SOL burned. This is the source of truth for what is actually still alive versus dead-but-still-shown-as-submitted; check it before treating any "reported" finding as pending.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'fence_add',
+    title: 'Record a §8 prior-art exclusion or a competitor-accepted report',
+    description:
+      'Log a piece of Anza ground-truth that forecloses a class of finding, so nobody wastes another 0.5 SOL burn on it: either a public issue/PR that predates our filing (RULES §8 excludes prior-art — this is exactly what would have caught F15 5h25m before it was filed, had it existed on the board), or a competitor\'s bug report Anza already accepted/merged in a given file (reworking that same class is a guaranteed rejection, e.g. five agents called block_id_repair_service.rs "clean" right before Anza merged three PRs crediting OTHER hunters in that exact file). Set applies_to to the finding id(s) this fences off and paths to the repo file(s) it covers — both drive the dashboard\'s prior-art collision warning and the cleared-files-with-accepted-bugs cross-check. Call this the moment you spot a public issue, merged PR, or advisory disposition that rules out a class of bug — before, not after, someone else burns a submission on it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: str('section8_issue | section8_pr | accepted_report | by_design | duplicate', {
+          enum: ['section8_issue', 'section8_pr', 'accepted_report', 'by_design', 'duplicate'],
+        }),
+        ref: str('Short reference, e.g. "agave#14335" or "agave#14358".'),
+        url: str('Full URL to the issue/PR/advisory.'),
+        title: str('Title of the issue/PR.'),
+        quote: str('The incriminating line — the exact sentence that proves this class is already known/fixed/credited to someone else.'),
+        published_at: str('UTC timestamp the issue/PR/advisory was published. Compared against a finding\'s submitted_at to compute the §8 collision warning — get this exact.'),
+        merged_at: str('UTC timestamp the PR was merged, if applicable.'),
+        applies_to: { type: 'array', items: { type: 'string' }, description: 'Finding ids this fence excludes or forecloses, e.g. ["F15"].' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'Repo file paths this fence covers, e.g. ["core/src/repair/block_id_repair_service.rs"]. Used to cross-check against files reviewers marked "clean".' },
+        note: str('Plain-English explanation of why this matters, e.g. "Published 5h25m BEFORE F15 was filed."'),
+      },
+      required: ['kind', 'ref'],
+    },
+  },
+  {
+    name: 'fences',
+    title: 'List all §8 prior-art fences and accepted-report exclusions',
+    description:
+      'Read every known prior-art exclusion and competitor-accepted report, newest first. Check this BEFORE filing any advisory and before marking any file "clean" in a review — a fence here means the class is already spoken for and a submission would be a wasted 0.5 SOL burn.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'related',
     title: 'What else touches this?',
     description:
@@ -1102,6 +1171,63 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
         blockers: readiness.blockers,
       });
     }
+
+    case 'advisory_upsert': {
+      if (!args.ghsa_id) return fail('advisory_upsert requires "ghsa_id".');
+      const result = room.upsertAdvisory(agent, {
+        ghsaId: args.ghsa_id,
+        findingId: args.finding_id,
+        title: args.title,
+        url: args.url,
+        state: args.state,
+        outcome: args.outcome,
+        anzaSeverity: args.anza_severity,
+        ourSeverity: args.our_severity,
+        product: args.product,
+        affectedVersions: args.affected_versions,
+        patchedVersions: args.patched_versions,
+        outcomeReason: args.outcome_reason,
+        closedBy: args.closed_by,
+        creditState: args.credit_state,
+        burnTx: args.burn_tx,
+        burnSol: args.burn_sol,
+        submittedAt: args.submitted_at,
+      });
+      if (!result.ok) return fail(result.error);
+      room.send(agent, {
+        to: 'all',
+        text: `${result.created ? 'New' : 'Updated'} advisory ${result.advisory.ghsaId}${result.advisory.findingId ? ` (${result.advisory.findingId})` : ''}: ${result.advisory.state}/${result.advisory.outcome}${result.advisory.outcomeReason ? ` — "${result.advisory.outcomeReason}"` : ''}`,
+      });
+      return text(result.advisory);
+    }
+
+    case 'advisories':
+      return text(room.advisories().length ? room.advisories() : 'No advisories recorded yet.');
+
+    case 'fence_add': {
+      if (!args.kind) return fail('fence_add requires "kind".');
+      if (!args.ref) return fail('fence_add requires "ref".');
+      const fence = room.addFence(agent, {
+        kind: args.kind,
+        ref: args.ref,
+        url: args.url,
+        title: args.title,
+        quote: args.quote,
+        publishedAt: args.published_at,
+        mergedAt: args.merged_at,
+        appliesTo: args.applies_to,
+        paths: args.paths,
+        note: args.note,
+      });
+      room.send(agent, {
+        to: 'all',
+        text: `New fence ${fence.id} [${fence.kind}] ${fence.ref}${fence.appliesTo.length ? ` — forecloses ${fence.appliesTo.join(', ')}` : ''}${fence.paths.length ? ` — covers ${fence.paths.join(', ')}` : ''}. Check before filing or clearing those.`,
+      });
+      return text(fence);
+    }
+
+    case 'fences':
+      return text(room.fences().length ? room.fences() : 'No fences recorded yet.');
 
     case 'related': {
       if (!args.id) return fail('related requires "id" — a file path, finding id, task id, goal id or agent name.');
