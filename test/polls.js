@@ -1,3 +1,12 @@
+/**
+ * This file used to test poll_create/poll_vote/polls, task_claim collision
+ * governance, and the automatic inactivity-kick poll. All of that is retired
+ * — the goal/task/poll ceremony carried little of the value agents actually
+ * produced on a real engagement, while the evidence (findings, file reviews,
+ * submissions) did. Nothing is deleted, though: every record either system
+ * ever created moves into `state.archive`, readable by any agent through the
+ * read-only `archive` tool. This file now tests that migration and that tool.
+ */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,180 +20,144 @@ const check = (condition, message) => {
   checks += 1;
 };
 
-const room = new Room({ name: 'poll-test' });
+// ------------------------------------------------------------- archive shape
+
+const room = new Room({ name: 'archive-test' });
 for (const name of ['alice', 'bob', 'charlie']) check(room.join(name).ok, `${name} joins`);
 
-// A kick is limited to inactive agents, excludes its target from voting, and
-// needs two-thirds approval. Historical ownership remains in task history.
+check('a fresh room starts with an empty, correctly-shaped archive',
+  Array.isArray(room.state.archive.tasks) && Array.isArray(room.state.archive.goals)
+    && Array.isArray(room.state.archive.polls) && Array.isArray(room.state.archive.digests)
+    && Array.isArray(room.state.archive.fences)
+    && typeof room.state.archive.env === 'object' && !Array.isArray(room.state.archive.env),
+  JSON.stringify(room.state.archive));
+check('no top-level legacy collections exist on a fresh room',
+  room.state.tasks === undefined && room.state.goals === undefined && room.state.polls === undefined
+    && room.state.digests === undefined && room.state.env === undefined && room.state.fences === undefined);
+
+// addTask/addFence remain real internal plumbing (finding_add's creates_task,
+// the seed script) even with their MCP tools retired — they write straight
+// into the archive.
 const assigned = room.addTask('alice', { title: 'orphanable work', assignTo: 'charlie' });
-let result = room.createPoll('alice', {
-  question: 'Kick Charlie while Charlie is online?',
-  action: { type: 'agent_kick', agent: 'charlie' },
-});
-check(!result.ok && /online/.test(result.error), 'cannot propose kicking an online agent');
-room.state.agents.charlie.lastSeen = 0;
-result = room.createPoll('alice', {
-  question: 'Remove inactive Charlie and release the claim?',
-  reason: 'Charlie has stopped responding.',
-  action: { type: 'agent_kick', agent: 'charlie' },
-});
-check(result.ok, 'inactive kick poll created');
-const kickId = result.poll.id;
-assert.deepEqual(result.poll.eligible, ['alice', 'bob']); checks += 1;
-assert.equal(result.poll.quorum, 2); checks += 1;
-assert.equal(result.poll.requiredYes, 2); checks += 1;
-check(room.votePoll('alice', kickId, 'yes').ok, 'first kick vote accepted');
-result = room.votePoll('alice', kickId, 'yes');
-check(!result.ok && result.duplicate, 'duplicate vote rejected');
-result = room.votePoll('bob', kickId, 'yes');
-check(result.ok && result.poll.status === 'passed', 'two-thirds kick poll passes');
-assert.equal(room.state.agents.charlie.membershipStatus, 'kicked'); checks += 1;
-assert.equal(room.task(assigned.id).owner, null); checks += 1;
-assert.equal(room.task(assigned.id).lastOwner, 'charlie'); checks += 1;
-check(room.task(assigned.id).history.some((entry) => /attribution preserved/.test(entry.what)), 'kick preserves ownership attribution');
-check(room.isAgentBlocked('charlie').blocked, 'kicked agent is blocked');
-check(!room.claimTask('charlie', assigned.id).ok, 'kicked identity cannot claim tasks');
-check(!room.updateTask('charlie', assigned.id, { notes: 'should not land' }).ok, 'kicked identity cannot update tasks');
-result = room.join('charlie');
-check(!result.ok && result.kicked, 'kicked identity cannot silently rejoin');
+check('addTask still works and lands in the archive, not top-level state',
+  room.state.archive.tasks.some((t) => t.id === assigned.id) && room.state.tasks === undefined);
+check('task() reads from the archive', room.task(assigned.id)?.id === assigned.id);
 
-// Restoration itself is explicit governance, after which the same historical
-// identity can reconnect rather than being replaced with a blank roster row.
-result = room.createPoll('alice', {
-  question: 'Restore Charlie?',
-  action: { type: 'agent_restore', agent: 'charlie' },
-});
-check(result.ok && result.poll.eligible.length === 2, 'restore poll excludes kicked voters');
-const restoreId = result.poll.id;
-room.votePoll('alice', restoreId, 'yes');
-result = room.votePoll('bob', restoreId, 'yes');
-check(result.poll.status === 'passed', 'restore poll passed');
-check(!room.isAgentBlocked('charlie').blocked, 'restored identity unblocked');
-check(room.join('charlie').ok, 'restored identity can rejoin');
+const fence = room.addFence('bob', { kind: 'section8_issue', ref: 'agave#1', paths: ['a.rs'] });
+check('addFence still works and lands in the archive', room.state.archive.fences.some((f) => f.id === fence.id));
+check('fences() reads from the archive, newest published first', room.fences().some((f) => f.ref === 'agave#1'));
 
-// The relay proposes governance instead of silently retaining or deleting an
-// inactive identity. Stale blocked work loses its owner while preserving the
-// dependency state, then active teammates decide the membership poll.
-const managed = new Room({ name: 'managed-inactivity' });
-managed.join('active');
-managed.join('inactive');
-const dependency = managed.addTask('active', { title: 'unfinished dependency' });
-const blockedWork = managed.addTask('active', {
-  title: 'blocked work owned by inactive', assignTo: 'inactive', dependsOn: dependency.id,
-});
-blockedWork.status = 'blocked';
-managed.state.agents.inactive.lastSeen = Date.now() - 31 * 60_000;
-managed.state.agents.inactive.joinedAt = new Date(Date.now() - 31 * 60_000).toISOString();
-check(managed.releaseStaleClaims().includes(blockedWork.id), 'stale blocked ownership is released');
-assert.equal(blockedWork.owner, null); checks += 1;
-assert.equal(blockedWork.status, 'blocked'); checks += 1;
-let managedPolls = managed.proposeInactiveKickPolls();
-assert.equal(managedPolls.length, 1); checks += 1;
-assert.equal(managedPolls[0].createdBy, 'system'); checks += 1;
-assert.deepEqual(managedPolls[0].eligible, ['active']); checks += 1;
-check(managedPolls[0].action.agent === 'inactive', 'automatic poll targets the inactive membership');
-check(managed.proposeInactiveKickPolls().length === 0, 'automatic inactivity polls are deduplicated');
-result = managed.votePoll('active', managedPolls[0].id, 'yes');
-check(result.poll.status === 'passed', 'active teammate can approve the managed inactivity poll');
-check(managed.isAgentBlocked('inactive').blocked, 'passed managed poll kicks the inactive identity');
-const removedBoard = await callTool(managed, 'active', 'board', {});
-check(removedBoard.content[0].text.includes('## Removed identities'), 'agent board separates removed identities');
-check((await callTool(managed, 'active', 'send', { to: 'inactive', text: 'stale recipient' })).isError,
-  'removed identities cannot receive new direct messages');
-check((await callTool(managed, 'active', 'task_add', { title: 'bad assignment', assign_to: 'inactive' })).isError,
-  'removed identities cannot receive new tasks');
-const soloFinding = managed.addFinding('active', {
-  title: 'needs a live verifier', target: 'component', evidence: 'reproducible evidence for a real candidate', createsTask: true,
-});
-assert.equal(managed.task(soloFinding.verificationTask).owner, null); checks += 1;
-check(!managed.updateFinding('active', soloFinding.id, { status: 'confirmed' }).ok,
-  'a finding reporter cannot self-confirm a submission');
+// -------------------------------------------------- kicked identities persist
+//
+// The kick/restore mechanism (poll_create action:agent_kick/agent_restore) is
+// gone, but a membershipStatus set by history must keep blocking that
+// identity — there is simply no tool left that can lift it.
+room.state.agents.charlie.membershipStatus = 'kicked';
+room.state.agents.charlie.blockReason = 'removed by a since-retired poll';
+check('a historically-kicked identity is still blocked', room.isAgentBlocked('charlie').blocked);
+const rejoin = room.join('charlie');
+check('a kicked identity still cannot silently rejoin', !rejoin.ok && rejoin.kicked);
+const blockedSend = await callTool(room, 'alice', 'send', { to: 'charlie', text: 'still there?' });
+check('a kicked identity is still not a valid message recipient', blockedSend.isError);
+delete room.state.agents.charlie.membershipStatus;
+delete room.state.agents.charlie.blockReason;
 
-// Task changes are applied exactly once when the strict-majority threshold is
-// reached. Closing cannot be used to truncate an undecided vote.
-result = room.createPoll('alice', {
-  question: 'Assign the abandoned task to Bob?',
-  action: { type: 'task_reassign', taskId: assigned.id, to: 'bob' },
+// --------------------------------------------------------- the archive tool
+
+const summary = await callTool(room, 'alice', 'archive', {});
+check('archive with no kind returns a per-kind summary',
+  summary.content[0].text.includes('"tasks": 1') && summary.content[0].text.includes('"fences": 1')
+    && summary.content[0].text.includes('"goals": 0'), summary.content[0].text);
+
+const badKind = await callTool(room, 'alice', 'archive', { kind: 'bogus' });
+check('archive rejects an unknown kind', badKind.isError && badKind.content[0].text.includes('Unknown archive kind'));
+
+const taskById = await callTool(room, 'alice', 'archive', { kind: 'tasks', id: assigned.id });
+check('archive with kind+id returns the single record', taskById.content[0].text.includes(assigned.id));
+const missingId = await callTool(room, 'alice', 'archive', { kind: 'tasks', id: 'T999' });
+check('archive with an id that does not exist fails usefully', missingId.isError);
+
+const envKind = await callTool(room, 'alice', 'archive', { kind: 'env' });
+check('archive with no records yet says so, not an empty array', envKind.content[0].text.includes('No archived environment facts'));
+room.state.archive.env.repo = { value: 'agave', by: 'alice', ts: new Date().toISOString() };
+const envAfter = await callTool(room, 'alice', 'archive', { kind: 'env' });
+check('archive with kind=env returns the fact map, not a list', envAfter.content[0].text.includes('"repo"') && envAfter.content[0].text.includes('agave'));
+
+// Newest-first ordering and the limit clamp.
+for (let i = 0; i < 5; i += 1) room.addTask('bob', { title: `task ${i}` });
+const limited = await callTool(room, 'alice', 'archive', { kind: 'tasks', limit: 2 });
+const limitedIds = [...limited.content[0].text.matchAll(/"id": "(T\d+)"/g)].map((m) => m[1]);
+check('archive returns records newest-first', limitedIds[0] > limitedIds[1], JSON.stringify(limitedIds));
+check('archive respects the limit parameter', limitedIds.length === 2, JSON.stringify(limitedIds));
+
+// ------------------------------------------------------- retired tools are gone
+
+for (const name of ['task_add', 'task_claim', 'task_update', 'goal_add', 'goal_update', 'goals',
+  'poll_create', 'poll_vote', 'polls', 'env_set', 'digest', 'fence_add', 'fences', 'related', 'graph']) {
+  const result = await callTool(room, 'alice', name, {});
+  check(`${name} is an unknown tool now`, result.isError && result.content[0].text.includes(`Unknown tool "${name}"`));
+}
+
+// ------------------------------------------------------ rename touches archive
+//
+// Task/poll history in the archive still needs to follow a rename — it is
+// preserved data, and stale names inside it would be a silent correctness bug.
+const ownedTask = room.addTask('alice', { title: 'alice owns this directly', assignTo: 'alice' });
+room.state.archive.polls.push({
+  id: 'P1', question: 'old question', status: 'passed', createdBy: 'alice',
+  eligible: ['alice', 'bob'], votes: { alice: { choice: 'yes', ts: new Date().toISOString() } },
+  action: { type: 'task_reassign', taskId: assigned.id, to: 'alice' },
 });
-const reassignId = result.poll.id;
-assert.equal(result.poll.requiredYes, 2); checks += 1;
-result = room.closePoll('alice', reassignId);
-check(!result.ok && result.pending, 'undecided poll cannot be closed early');
-room.votePoll('alice', reassignId, 'yes');
-result = room.votePoll('bob', reassignId, 'yes');
-check(result.poll.status === 'passed', 'task reassignment passes');
-assert.equal(room.task(assigned.id).owner, 'bob'); checks += 1;
-assert.equal(room.task(assigned.id).status, 'claimed'); checks += 1;
-assert.deepEqual(room.task(assigned.id).participants, ['charlie', 'bob']); checks += 1;
-assert.equal(room.task(assigned.id).lastOwner, 'charlie'); checks += 1;
-assert.equal(room.task(assigned.id).history.filter((entry) => entry.what.includes(`reassigned by poll ${reassignId}`)).length, 1); checks += 1;
-check(room.closePoll('alice', reassignId).alreadyClosed, 'closing a finished poll is idempotent');
+check('rename succeeds', room.rename('alice', 'alice-2').ok);
+const renamedPoll = room.state.archive.polls.find((p) => p.id === 'P1');
+check('archived poll electorate follows the rename', renamedPoll.eligible.includes('alice-2') && !renamedPoll.eligible.includes('alice'));
+check('archived poll ballots follow the rename', Boolean(renamedPoll.votes['alice-2']) && !renamedPoll.votes.alice);
+check('archived poll action target follows the rename', renamedPoll.action.to === 'alice-2');
+check('archived task ownership follows the rename', room.task(ownedTask.id).owner === 'alice-2');
+check('archived task creator follows the rename', room.task(assigned.id).createdBy === 'alice-2');
+check('forget() still reports ownership sourced from the archive',
+  room.forget('alice-2', { force: true }).owns.includes(ownedTask.id));
 
-result = room.createPoll('bob', {
-  question: 'Release the task again?',
-  action: { type: 'task_release', taskId: assigned.id },
-});
-const releaseId = result.poll.id;
-room.votePoll('alice', releaseId, 'yes');
-room.votePoll('bob', releaseId, 'yes');
-assert.equal(room.task(assigned.id).owner, null); checks += 1;
-assert.equal(room.task(assigned.id).status, 'open'); checks += 1;
-
-// Eligibility is a creation-time snapshot. Abstentions count toward quorum but
-// not approval, and a result rejects once approval is mathematically impossible.
-result = room.createPoll('alice', { question: 'Adopt a new convention?' });
-const rejectedId = result.poll.id;
-room.join('dave');
-result = room.votePoll('dave', rejectedId, 'yes');
-check(!result.ok && /not eligible/.test(result.error), 'late join cannot move poll electorate');
-room.votePoll('alice', rejectedId, 'no');
-result = room.votePoll('bob', rejectedId, 'no');
-check(result.poll.status === 'rejected', 'poll rejects once threshold is unreachable after quorum');
-assert.equal(room.listPolls('open').length, 0); checks += 1;
-check(room.listPolls('passed').length >= 3, 'poll list filters by status');
-check(room.board('alice').polls.recent.some((poll) => poll.id === rejectedId), 'board exposes recent poll decisions');
-
-// Renaming preserves voter identity and agent references inside poll history.
-result = room.createPoll('alice', {
-  question: 'Restore ownership to Charlie?',
-  action: { type: 'task_reassign', taskId: assigned.id, to: 'charlie' },
-});
-const renamePollId = result.poll.id;
-room.votePoll('alice', renamePollId, 'yes');
-check(room.rename('alice', 'alice-2').ok, 'agent rename succeeds');
-const renamedPoll = room.poll(renamePollId);
-check(renamedPoll.eligible.includes('alice-2') && !renamedPoll.eligible.includes('alice'), 'poll electorate follows rename');
-check(Boolean(renamedPoll.votes['alice-2']) && !renamedPoll.votes.alice, 'cast ballot follows rename');
-check(room.state.tasks.every((task) => !(task.participants || []).includes('alice')), 'task participation history follows rename');
-
-// A malformed record from an early/draft schema is repaired without dropping
-// data, and the poll counter advances beyond IDs already on disk.
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bros-polls-'));
+// ------------------------------------------------------------------ migration
+//
+// Exactly what a pre-archive relay's data/<room>.json looks like: top-level
+// tasks/goals/polls/digests/env/fences, some with malformed ids from an even
+// older schema. This must load without error and without losing anything.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bros-archive-migration-'));
 const stateFile = path.join(tmp, 'state.json');
+const ts = new Date().toISOString();
 fs.writeFileSync(stateFile, JSON.stringify({
-  room: 'legacy',
-  agents: { legacy: { name: 'legacy', lastSeen: 0 } },
-  polls: [{ id: 'broken', question: 'Old question', votes: null }],
-  counters: { poll: 'bad' },
+  room: 'legacy', agents: { legacy: { name: 'legacy', lastSeen: 0 } },
+  findings: [], files: {}, messages: [], log: [], aliases: {},
+  counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 'bad', seq: 0, fence: 0 },
+  tasks: [{ id: 'T1', title: 'old task', status: 'open', history: [] }],
+  goals: [{ id: 'broken', title: 'malformed id from an older schema' }],
+  polls: [{ id: 'broken', question: 'old poll', votes: null }],
+  digests: [{ id: 'D1', ts, fromSeq: 0, toSeq: 2, lines: ['2 messages from legacy'] }],
+  env: { repo: { value: 'agave', by: 'legacy', ts } },
+  fences: [{ id: 'FN1', kind: 'accepted_report', ref: 'agave#1', paths: ['a.rs'] }],
 }), { mode: 0o600 });
+
 const healed = new Room({ name: 'legacy', file: stateFile });
-assert.equal(healed.state.polls.length, 1); checks += 1;
-assert.match(healed.state.polls[0].id, /^P\d+$/); checks += 1;
-assert.deepEqual(healed.state.polls[0].votes, {}); checks += 1;
-assert.deepEqual(healed.state.polls[0].eligible, ['legacy']); checks += 1;
-result = healed.createPoll('legacy', { question: 'New question' });
-check(result.ok && Number(result.poll.id.slice(1)) > Number(healed.state.polls[0].id.slice(1)), 'healed counter does not collide');
+check('migration heals a malformed archived poll id', /^P\d+$/.test(healed.state.archive.polls[0].id));
+check('migration heals a malformed archived goal id', /^G\d+$/.test(healed.state.archive.goals[0].id));
+check('migration does not touch sound archived ids', healed.state.archive.tasks[0].id === 'T1');
+check('the counter heals from a non-numeric value and continues past ids in use',
+  Number.isFinite(healed.state.counters.poll) && healed.state.counters.poll >= 1);
+check('every legacy record survives the migration, nothing lost',
+  healed.state.archive.tasks.length === 1 && healed.state.archive.goals.length === 1
+    && healed.state.archive.polls.length === 1 && healed.state.archive.digests.length === 1
+    && healed.state.archive.fences.length === 1 && healed.state.archive.env.repo?.value === 'agave');
+check('top-level legacy keys are gone once migrated',
+  healed.state.tasks === undefined && healed.state.goals === undefined && healed.state.polls === undefined
+    && healed.state.digests === undefined && healed.state.env === undefined && healed.state.fences === undefined);
 
-const durableFile = path.join(tmp, 'durable.json');
-const durable = new Room({ name: 'durable', file: durableFile });
-durable.join('voter');
-const durablePoll = durable.createPoll('voter', { question: 'Survive a relay restart?' });
-durable.votePoll('voter', durablePoll.poll.id, 'yes');
-await new Promise((resolve) => setTimeout(resolve, 350));
-const reloaded = new Room({ name: 'durable', file: durableFile });
-const afterRestart = reloaded.poll(durablePoll.poll.id);
-check(afterRestart?.status === 'passed', 'poll and decision survive a file-backed restart');
-assert.equal(afterRestart.tally.yes, 1); checks += 1;
-assert.equal(fs.statSync(durableFile).mode & 0o777, 0o600); checks += 1;
+await new Promise((resolve) => setTimeout(resolve, 350)); // let the debounced save land
+const reloaded = new Room({ name: 'legacy', file: stateFile });
+check('a second load of an already-migrated file does not duplicate anything',
+  reloaded.state.archive.tasks.length === 1 && reloaded.state.archive.goals.length === 1
+    && reloaded.state.archive.polls.length === 1 && reloaded.state.archive.digests.length === 1
+    && reloaded.state.archive.fences.length === 1);
+fs.rmSync(tmp, { recursive: true, force: true });
 
-console.log(`poll tests passed (${checks} checks)`);
+console.log(`archive tests passed (${checks} checks)`);

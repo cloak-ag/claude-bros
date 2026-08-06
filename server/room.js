@@ -3,18 +3,13 @@ import path from 'node:path';
 
 const ONLINE_WINDOW_MS = 90_000;
 const STATUS_STALE_MS = 5 * 60_000;      // a status older than this is not "what they are doing"
-// an owner silent this long no longer holds their claim — tunable via BROS_CLAIM_STALE_MS (ms)
-const claimStaleMs = () => Number(process.env.BROS_CLAIM_STALE_MS) || 30 * 60_000;
-// Inactive membership is a team decision, not an automatic deletion. After
-// this window the relay opens a kick poll for active teammates to decide.
-const kickCandidateMs = () => Number(process.env.BROS_KICK_CANDIDATE_MS) || 30 * 60_000;
-const KICK_REJECTED_COOLDOWN_MS = 24 * 60 * 60_000;
 const DEDUP_WINDOW_MS = 5 * 60_000;      // identical text from one agent inside this window is a repeat
 const COLLISION_GRACE_MS = 30 * 60_000;  // a name is free again once its machine has been silent this long
-const DIGEST_EVERY_MESSAGES = 20;
-const DIGEST_EVERY_MS = 15 * 60_000;
 const MAX_MESSAGES = 1000;
 const MAX_LOG = 500;
+// Collections retired from active use (tasks, goals, polls, digests, env,
+// fences) but never deleted — see `archive` below and the `archive` MCP tool.
+const ARCHIVE_KINDS = ['tasks', 'goals', 'polls', 'digests', 'fences'];
 
 const nowIso = () => new Date().toISOString();
 
@@ -38,17 +33,15 @@ export class Room {
       createdAt: nowIso(),
       agents: {},
       messages: [],
-      tasks: [],
       findings: [],
-      goals: [],
-      polls: [],
       files: {},
-      env: {},
-      digests: [],
       log: [],
       aliases: {},
       advisories: [],
-      fences: [],
+      // Retired systems (tasks, goals, polls, digests, env, fences) live here,
+      // read-only, so any agent can still check them via the `archive` tool —
+      // see #migrateToArchive() for how an older state file lands here intact.
+      archive: { tasks: [], goals: [], polls: [], digests: [], env: {}, fences: [] },
       counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 0, seq: 0, fence: 0 },
     };
     // Synchronous load for file-based or pure in-memory (used by tests);
@@ -149,12 +142,68 @@ export class Room {
    * not a finite number, re-id anything that got a broken id, and move each
    * counter past the highest id actually in use so nothing collides.
    */
+  /**
+   * Retired systems (tasks, goals, polls, digests, env, fences) are never
+   * deleted — they move under `archive`, additively and idempotently, so the
+   * read-only `archive` tool can always show a pre-archive room its full
+   * history. A state file already on the new shape (no top-level survivors)
+   * is a no-op; records already present in `archive` (matched by id, or by
+   * key for `env`) are never duplicated by a second migration pass.
+   */
+  #migrateToArchive() {
+    if (!this.state.archive || typeof this.state.archive !== 'object' || Array.isArray(this.state.archive)) {
+      this.state.archive = {};
+    }
+    const archive = this.state.archive;
+    for (const key of ARCHIVE_KINDS) {
+      if (!Array.isArray(archive[key])) archive[key] = [];
+    }
+    if (!archive.env || typeof archive.env !== 'object' || Array.isArray(archive.env)) archive.env = {};
+
+    let movedRecords = 0;
+    for (const key of ARCHIVE_KINDS) {
+      const legacy = this.state[key];
+      if (Array.isArray(legacy) && legacy.length) {
+        // Dedup only against what archive[key] already held BEFORE this pass —
+        // a normal load never re-migrates (the top-level key is deleted right
+        // below), so this only guards a hand-edited/partial state file. It must
+        // not compare legacy items against each other: an older, still-broken
+        // schema can carry more than one record sharing the same malformed id,
+        // and #repairIds (right after this runs) is what gives each its own —
+        // deduping them here would silently drop one instead of healing it.
+        const known = new Set(archive[key].map((item) => item.id));
+        for (const item of legacy) {
+          if (known.has(item.id)) continue;
+          archive[key].push(item);
+          movedRecords += 1;
+        }
+      }
+      delete this.state[key];
+    }
+    let movedEnvKeys = 0;
+    if (this.state.env && typeof this.state.env === 'object' && !Array.isArray(this.state.env)) {
+      for (const [key, value] of Object.entries(this.state.env)) {
+        if (archive.env[key] !== undefined) continue;
+        archive.env[key] = value;
+        movedEnvKeys += 1;
+      }
+    }
+    delete this.state.env;
+
+    if (movedRecords || movedEnvKeys) {
+      console.log(`[bros] archived ${movedRecords} legacy record(s) and ${movedEnvKeys} environment field(s) from top-level state`);
+    }
+  }
+
   #repairIds() {
+    this.#migrateToArchive();
+    const archive = this.state.archive;
+
     // These collections did not all exist in early state files. Be deliberately
     // conservative here: a missing collection is healed, while existing audit
     // history is never discarded.
     let healed = 0;
-    for (const key of ['messages', 'tasks', 'findings', 'goals', 'polls', 'digests', 'log', 'advisories', 'fences']) {
+    for (const key of ['messages', 'findings', 'log', 'advisories']) {
       if (!Array.isArray(this.state[key])) { this.state[key] = []; healed += 1; }
     }
     if (!this.state.agents || typeof this.state.agents !== 'object' || Array.isArray(this.state.agents)) { this.state.agents = {}; healed += 1; }
@@ -163,19 +212,19 @@ export class Room {
     if (!this.state.counters || typeof this.state.counters !== 'object') { this.state.counters = {}; healed += 1; }
 
     const kinds = [
-      ['goal', 'G', this.state.goals, (from, to) => this.state.tasks.forEach((t) => { if (t.goal === from) t.goal = to; })],
-      ['task', 'T', this.state.tasks, null],
+      ['goal', 'G', archive.goals, (from, to) => archive.tasks.forEach((t) => { if (t.goal === from) t.goal = to; })],
+      ['task', 'T', archive.tasks, null],
       ['finding', 'F', this.state.findings, (from, to) => {
         Object.values(this.state.files).forEach((f) => {
           f.findings = (f.findings || []).map((id) => (id === from ? to : id));
         });
-        this.state.fences.forEach((fence) => {
+        archive.fences.forEach((fence) => {
           if (Array.isArray(fence.appliesTo)) fence.appliesTo = fence.appliesTo.map((id) => (id === from ? to : id));
         });
       }],
       ['message', 'M', this.state.messages, null],
-      ['poll', 'P', this.state.polls, null],
-      ['fence', 'FN', this.state.fences, null],
+      ['poll', 'P', archive.polls, null],
+      ['fence', 'FN', archive.fences, null],
     ];
 
     let repaired = 0;
@@ -209,18 +258,16 @@ export class Room {
     }
     this.state.counters.seq = seq;
 
-    // Polls initially shipped after the rest of the board schema. Heal the
-    // few fields required to evaluate old/draft records deterministically.
-    for (const poll of this.state.polls) {
+    // Polls and tasks initially shipped after the rest of the board schema.
+    // Heal the few fields needed to read old/draft archived records reliably.
+    for (const poll of archive.polls) {
       if (!poll.votes || typeof poll.votes !== 'object' || Array.isArray(poll.votes)) { poll.votes = {}; healed += 1; }
       if (!Array.isArray(poll.eligible)) { poll.eligible = Object.keys(this.state.agents).filter((name) => !this.#isKicked(name)); healed += 1; }
       if (!poll.status) { poll.status = 'open'; healed += 1; }
       if (!poll.createdAt) { poll.createdAt = nowIso(); healed += 1; }
       if (!poll.updatedAt) { poll.updatedAt = poll.createdAt; healed += 1; }
-      poll.quorum = this.#pollQuorum(poll);
-      poll.requiredYes = this.#pollRequiredYes(poll);
     }
-    for (const task of this.state.tasks) {
+    for (const task of archive.tasks) {
       if (!Array.isArray(task.participants)) {
         task.participants = [...new Set([
           task.owner,
@@ -367,21 +414,18 @@ export class Room {
       .map((a) => ({ name: a.name, hosts: a.hosts }));
   }
 
+  /**
+   * Presence + one-line status only. Task ownership used to be folded in here,
+   * but the task system is retired (see `archive`) — a compact roster is the
+   * point, not a place to re-derive it.
+   */
   roster() {
     return Object.values(this.state.agents).map((record) => {
       // role/scope may exist in restored pre-task-model state. Keep them on
       // disk for lossless migration, but never expose them as current identity.
       const { role: _legacyRole, scope: _legacyScope, ...a } = record;
-      const taken = this.state.tasks.filter((task) => (task.participants || []).includes(a.name)
-        || task.owner === a.name || task.lastOwner === a.name
-        || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
       return {
         ...a,
-        currentTasks: taken.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status))
-          .map((task) => ({ id: task.id, title: task.title, status: task.status })),
-        tasksTaken: taken.map((task) => task.id),
-        completedTasks: taken.filter((task) => task.status === 'done')
-          .map((task) => ({ id: task.id, title: task.title, notes: task.notes || '' })),
         online: a.membershipStatus !== 'kicked' && Date.now() - (a.lastSeen || 0) < ONLINE_WINDOW_MS,
         statusAgeMs: Date.now() - (a.statusAt || 0),
         statusStale: Date.now() - (a.statusAt || 0) > STATUS_STALE_MS,
@@ -505,7 +549,13 @@ export class Room {
     }
   }
 
-  // ----------------------------------------------------------------- tasks
+  // ----------------------------------------------------------- tasks (archived)
+  //
+  // task_add/task_claim/task_update and the stale-claim/kick timers are
+  // retired — see the engagement note at the top of this file. `addTask` and
+  // `task` remain as internal plumbing only: `addFinding`'s `creates_task`
+  // option still records a verification task, straight into the archive,
+  // where it is readable via the `archive` tool but no longer claimable.
 
   addTask(from, { title, scope = '', notes = '', assignTo = '', dependsOn = '' }) {
     const task = {
@@ -522,7 +572,7 @@ export class Room {
       participants: assignTo ? [assignTo] : [],
     };
     if (dependsOn) task.dependsOn = dependsOn;
-    this.state.tasks.push(task);
+    this.state.archive.tasks.push(task);
     this.touch(from);
     this.save();
     this.#wake();
@@ -530,117 +580,17 @@ export class Room {
   }
 
   task(id) {
-    return this.state.tasks.find((t) => t.id === id) || null;
+    return this.state.archive.tasks.find((t) => t.id === id) || null;
   }
 
-  /**
-   * A claim is a live signal, not a lock. An agent that hits a usage limit and
-   * disappears must not hold work hostage, so a claim lapses once its owner has
-   * been silent long enough.
-   */
-  releaseStaleClaims() {
-    const released = [];
-    for (const task of this.state.tasks) {
-      if (!['claimed', 'blocked'].includes(task.status) || !task.owner) continue;
-      const owner = this.state.agents[task.owner];
-      const quiet = Date.now() - (owner?.lastSeen || 0);
-      if (quiet < claimStaleMs()) continue;
-      const previousStatus = task.status;
-      task.history.push({ ts: nowIso(), who: 'system', what: `claim lapsed — ${task.owner} silent ${Math.round(quiet / 60000)} min` });
-      task.lastOwner = task.owner;
-      task.owner = null;
-      const dependency = task.dependsOn && this.task(task.dependsOn);
-      task.status = previousStatus === 'blocked' && dependency?.status !== 'done' ? 'blocked' : 'open';
-      task.updatedAt = nowIso();
-      released.push(task.id);
-    }
-    if (released.length) {
-      this.note('system', `claims lapsed: ${released.join(', ')}`);
-      this.save();
-    }
-    return released;
-  }
-
-  /** The whole point of the relay: two agents cannot claim the same work. */
-  claimTask(agent, id) {
-    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot claim tasks.` };
-    this.releaseStaleClaims();
-    const task = this.task(id);
-    if (!task) return { ok: false, error: `No task ${id}.` };
-    if (task.owner && task.owner !== agent) {
-      const owner = this.state.agents[task.owner];
-      const quiet = Math.round((Date.now() - (owner?.lastSeen || 0)) / 60000);
-      return {
-        ok: false,
-        error: `${id} is being worked by ${task.owner} (last active ${quiet} min ago). Pick another one — `
-          + `it frees up automatically after ${Math.round(claimStaleMs() / 60000)} min of their silence.`,
-        task,
-      };
-    }
-    if (task.status === 'done') return { ok: false, error: `${id} is already done.`, task };
-
-    // Check dependencies
-    if (task.dependsOn) {
-      const dep = this.task(task.dependsOn);
-      if (dep && dep.status !== 'done') {
-        task.status = 'blocked';
-        this.save();
-        return {
-          ok: false,
-          error: `${id} depends on ${task.dependsOn} (status: ${dep.status}). It will unblock when the dependency is done.`,
-          task,
-        };
-      }
-    }
-
-    task.owner = agent;
-    task.participants ||= [];
-    if (!task.participants.includes(agent)) task.participants.push(agent);
-    task.status = 'claimed';
-    task.updatedAt = nowIso();
-    task.history.push({ ts: nowIso(), who: agent, what: 'claimed' });
-    this.touch(agent);
-    this.save();
-    return { ok: true, task };
-  }
-
-  updateTask(agent, id, { status, notes }) {
-    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot update tasks.` };
-    const task = this.task(id);
-    if (!task) return { ok: false, error: `No task ${id}.` };
-    if (task.owner && task.owner !== agent) {
-      return {
-        ok: false,
-        error: `${id} belongs to ${task.owner}. You cannot change or release another agent's task directly. `
-          + 'Use poll_create with task_reassign or task_release.',
-      };
-    }
-    if (status) task.status = status;
-    if (notes) task.notes = task.notes ? `${task.notes}\n${notes}` : notes;
-    task.updatedAt = nowIso();
-    task.history.push({ ts: nowIso(), who: agent, what: `${status || 'note'}${notes ? `: ${notes}` : ''}` });
-    this.touch(agent);
-
-    // If this task was completed, unblock any tasks depending on it
-    if (status === 'done') {
-      for (const t of this.state.tasks) {
-        if (t.dependsOn === id && t.status === 'blocked') {
-          t.status = 'open';
-          t.history.push({ ts: nowIso(), who: 'system', what: `unblocked — dependency ${id} completed` });
-        }
-      }
-    }
-
-    this.save();
-    return { ok: true, task };
-  }
-
-  tasks(status) {
-    const all = this.state.tasks;
-    return status ? all.filter((t) => t.status === status) : all;
-  }
-
-  // ------------------------------------------------------------------ polls
+  // ----------------------------------------------------------- membership
+  //
+  // poll_create/poll_vote/polls and the automatic inactivity-kick generator
+  // are retired — every poll a room ever held (including the ones that kicked
+  // or restored an identity) is preserved verbatim in `archive.polls`. What
+  // stays live is only the resulting membership flag on the agent record
+  // itself, so a `membershipStatus: 'kicked'` from before this change keeps
+  // blocking that identity; there is no tool left to kick or restore one.
 
   /** Whether governance has disabled this identity without erasing its work. */
   #isKicked(name) {
@@ -652,303 +602,6 @@ export class Room {
     return agent?.membershipStatus === 'kicked'
       ? { blocked: true, reason: agent.blockReason || 'removed by collaboration poll', pollId: agent.kickedByPoll || null }
       : { blocked: false };
-  }
-
-  #pollQuorum(poll) {
-    const voters = poll.eligible?.length || 0;
-    return voters ? Math.floor(voters / 2) + 1 : 0;
-  }
-
-  #pollRequiredYes(poll) {
-    const voters = poll.eligible?.length || 0;
-    // Removing a teammate is deliberately harder than moving work. The target
-    // is excluded from `eligible`, so it cannot veto or approve its own kick.
-    if (poll.action?.type === 'agent_kick') return Math.max(1, Math.ceil(voters * 2 / 3));
-    return voters ? Math.floor(voters / 2) + 1 : 0;
-  }
-
-  #pollTally(poll) {
-    const choices = Object.values(poll.votes || {}).map((vote) => vote.choice);
-    return {
-      yes: choices.filter((choice) => choice === 'yes').length,
-      no: choices.filter((choice) => choice === 'no').length,
-      abstain: choices.filter((choice) => choice === 'abstain').length,
-      cast: choices.length,
-      eligible: poll.eligible.length,
-      quorum: poll.quorum,
-      requiredYes: poll.requiredYes,
-    };
-  }
-
-  #pollView(poll) {
-    return { ...poll, tally: this.#pollTally(poll) };
-  }
-
-  #validatePollAction(action) {
-    if (!action) return { ok: true, action: null };
-    if (!action.type) return { ok: false, error: 'A poll action requires a type.' };
-    if (action.type === 'task_release' || action.type === 'task_reassign') {
-      const task = this.task(action.taskId);
-      if (!task) return { ok: false, error: `No task ${action.taskId}.` };
-      if (task.status === 'done') return { ok: false, error: `${action.taskId} is already done.` };
-      if (action.type === 'task_reassign') {
-        if (!action.to || !this.state.agents[action.to]) return { ok: false, error: `No agent called "${action.to || ''}".` };
-        if (this.#isKicked(action.to)) return { ok: false, error: `${action.to} is kicked and cannot receive work.` };
-        if (Date.now() - (this.state.agents[action.to].lastSeen || 0) >= ONLINE_WINDOW_MS) {
-          return { ok: false, error: `${action.to} is inactive and cannot receive reassigned work.` };
-        }
-      }
-      return { ok: true, action: { type: action.type, taskId: action.taskId, ...(action.to ? { to: action.to } : {}) } };
-    }
-    if (action.type === 'agent_kick' || action.type === 'agent_restore') {
-      const name = action.agent;
-      const agent = this.state.agents[name];
-      if (!agent) return { ok: false, error: `No agent called "${name || ''}".` };
-      if (action.type === 'agent_kick') {
-        if (this.#isKicked(name)) return { ok: false, error: `${name} is already kicked.` };
-        if (Date.now() - (agent.lastSeen || 0) < ONLINE_WINDOW_MS) {
-          return { ok: false, error: `${name} is online. Kick polls are only allowed for inactive agents.` };
-        }
-      } else if (!this.#isKicked(name)) {
-        return { ok: false, error: `${name} is not kicked.` };
-      }
-      return { ok: true, action: { type: action.type, agent: name } };
-    }
-    return { ok: false, error: `Unknown poll action "${action.type}".` };
-  }
-
-  /**
-   * Create a durable yes/no/abstain poll. Eligible *active* voters are
-   * snapshotted so a long historical roster cannot make a decision impossible
-   * and later joins cannot move the goalposts. The creator is always included.
-   * Ordinary actions need a strict majority; kicks need two thirds (target excluded).
-   */
-  createPoll(agent, { question, action = null, reason = '' }) {
-    if (!this.state.agents[agent]) return { ok: false, error: `No agent called "${agent}".` };
-    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot create polls.` };
-    if (typeof question !== 'string' || !question.trim()) return { ok: false, error: 'A poll question is required.' };
-    const checked = this.#validatePollAction(action);
-    if (!checked.ok) return checked;
-
-    let eligible = Object.keys(this.state.agents).filter((name) =>
-      !this.#isKicked(name)
-      && (name === agent || Date.now() - (this.state.agents[name].lastSeen || 0) < ONLINE_WINDOW_MS));
-    if (checked.action?.type === 'agent_kick') eligible = eligible.filter((name) => name !== checked.action.agent);
-    if (!eligible.length) return { ok: false, error: 'No eligible voters for this poll.' };
-    const ts = nowIso();
-    const poll = {
-      id: this.#id('poll', 'P'),
-      question: question.trim(),
-      reason: typeof reason === 'string' ? reason.trim() : '',
-      action: checked.action,
-      createdBy: agent,
-      createdAt: ts,
-      updatedAt: ts,
-      status: 'open',
-      eligible,
-      votes: {},
-    };
-    poll.quorum = this.#pollQuorum(poll);
-    poll.requiredYes = this.#pollRequiredYes(poll);
-    this.state.polls.push(poll);
-    this.note(agent, `opened poll ${poll.id}: ${poll.question}`);
-    this.save();
-    this.#wake();
-    return { ok: true, poll: this.#pollView(poll) };
-  }
-
-  poll(id) {
-    const poll = this.state.polls.find((item) => item.id === id);
-    return poll ? this.#pollView(poll) : null;
-  }
-
-  listPolls(status = '') {
-    return this.state.polls
-      .filter((poll) => !status || poll.status === status)
-      .map((poll) => this.#pollView(poll));
-  }
-
-  /**
-   * Surface inactive memberships to the team without silently removing them.
-   * One system poll is opened per candidate after sustained inactivity. Active
-   * agents remain the electorate and must explicitly approve the kick.
-   */
-  proposeInactiveKickPolls() {
-    const now = Date.now();
-    const activeVoters = Object.values(this.state.agents)
-      .filter((agent) => !this.#isKicked(agent.name) && now - (agent.lastSeen || 0) < ONLINE_WINDOW_MS)
-      .map((agent) => agent.name);
-    if (!activeVoters.length) return [];
-
-    const opened = [];
-    for (const target of Object.values(this.state.agents)) {
-      if (this.#isKicked(target.name) || activeVoters.includes(target.name)) continue;
-      const lastActivity = Math.max(
-        Number(target.lastSeen) || 0,
-        Date.parse(target.joinedAt || '') || 0,
-        Date.parse(target.restoredAt || '') || 0,
-      );
-      const inactiveFor = now - lastActivity;
-      if (inactiveFor < kickCandidateMs()) continue;
-
-      const earlier = [...this.state.polls].reverse()
-        .find((poll) => poll.action?.type === 'agent_kick' && poll.action.agent === target.name);
-      if (earlier?.status === 'open') continue;
-      if (earlier?.status === 'rejected'
-        && now - Date.parse(earlier.closedAt || earlier.updatedAt || 0) < KICK_REJECTED_COOLDOWN_MS) continue;
-
-      const eligible = activeVoters.filter((name) => name !== target.name);
-      if (!eligible.length) continue;
-      const owned = this.state.tasks
-        .filter((task) => task.owner === target.name && task.status !== 'done')
-        .map((task) => task.id);
-      const minutes = Math.max(0, Math.floor(inactiveFor / 60_000));
-      const ts = nowIso();
-      const poll = {
-        id: this.#id('poll', 'P'),
-        question: `Remove inactive agent ${target.name}?`,
-        reason: `${target.name} has been inactive for ${minutes} minutes.`
-          + (owned.length ? ` Passing this poll releases ${owned.join(', ')}.` : ' Historical contributions remain attributed.'),
-        action: { type: 'agent_kick', agent: target.name },
-        createdBy: 'system',
-        createdAt: ts,
-        updatedAt: ts,
-        status: 'open',
-        eligible,
-        votes: {},
-        systemManaged: true,
-      };
-      poll.quorum = this.#pollQuorum(poll);
-      poll.requiredYes = this.#pollRequiredYes(poll);
-      this.state.polls.push(poll);
-      this.state.log.push({ ts, who: 'system', text: `opened inactivity poll ${poll.id} for ${target.name}` });
-      if (this.state.log.length > MAX_LOG) this.state.log.splice(0, this.state.log.length - MAX_LOG);
-      opened.push(this.#pollView(poll));
-    }
-    if (opened.length) {
-      this.save();
-      this.#wake();
-    }
-    return opened;
-  }
-
-  votePoll(agent, id, choice) {
-    const poll = this.state.polls.find((item) => item.id === id);
-    if (!poll) return { ok: false, error: `No poll ${id}.` };
-    if (poll.status !== 'open') return { ok: false, error: `${id} is already ${poll.status}.`, poll: this.#pollView(poll) };
-    if (this.#isKicked(agent)) return { ok: false, error: `${agent} is kicked and cannot vote.` };
-    if (!poll.eligible.includes(agent)) return { ok: false, error: `${agent} is not eligible to vote in ${id}.` };
-    if (!['yes', 'no', 'abstain'].includes(choice)) return { ok: false, error: 'Vote must be yes, no, or abstain.' };
-    if (poll.votes[agent]) return { ok: false, duplicate: true, error: `${agent} already voted in ${id}.` };
-
-    poll.votes[agent] = { choice, ts: nowIso() };
-    poll.updatedAt = nowIso();
-    this.touch(agent);
-    const finalized = this.#finalizePollIfDecided(poll);
-    this.save();
-    this.#wake();
-    return { ok: true, poll: this.#pollView(poll), finalized };
-  }
-
-  /** Finalize only a mathematically decided result; nobody can close voting early. */
-  closePoll(agent, id) {
-    const poll = this.state.polls.find((item) => item.id === id);
-    if (!poll) return { ok: false, error: `No poll ${id}.` };
-    if (poll.status !== 'open') return { ok: true, alreadyClosed: true, poll: this.#pollView(poll) };
-    if (!poll.eligible.includes(agent) || this.#isKicked(agent)) return { ok: false, error: `${agent} cannot close ${id}.` };
-    const finalized = this.#finalizePollIfDecided(poll);
-    if (!finalized) {
-      const tally = this.#pollTally(poll);
-      return { ok: false, pending: true, error: `${id} is not decided yet (${tally.cast}/${tally.eligible} votes cast).`, poll: this.#pollView(poll) };
-    }
-    this.save();
-    return { ok: true, poll: this.#pollView(poll) };
-  }
-
-  #finalizePollIfDecided(poll) {
-    const tally = this.#pollTally(poll);
-    const remaining = tally.eligible - tally.cast;
-    let passed = false;
-    if (tally.yes >= poll.requiredYes) passed = true;
-    else if (tally.cast < poll.quorum || tally.yes + remaining >= poll.requiredYes) return false;
-
-    poll.status = passed ? 'passed' : 'rejected';
-    poll.closedAt = nowIso();
-    poll.updatedAt = poll.closedAt;
-    poll.result = { ...tally, passed };
-    if (passed && poll.action) poll.execution = this.#executePollAction(poll);
-    this.note('system', `poll ${poll.id} ${poll.status}${poll.execution && !poll.execution.ok ? `; action failed: ${poll.execution.error}` : ''}`);
-    return true;
-  }
-
-  #executePollAction(poll) {
-    const action = poll.action;
-    const ts = nowIso();
-    if (action.type === 'task_release' || action.type === 'task_reassign') {
-      const task = this.task(action.taskId);
-      if (!task) return { ok: false, error: `No task ${action.taskId}.` };
-      if (task.status === 'done') return { ok: false, error: `${task.id} became done before the poll passed.` };
-      const previous = task.owner;
-      task.participants ||= [];
-      if (previous && !task.participants.includes(previous)) task.participants.push(previous);
-      if (action.type === 'task_reassign') {
-        if (!this.state.agents[action.to] || this.#isKicked(action.to)) return { ok: false, error: `${action.to} cannot receive work.` };
-        if (Date.now() - (this.state.agents[action.to].lastSeen || 0) >= ONLINE_WINDOW_MS) {
-          return { ok: false, error: `${action.to} became inactive before the poll passed.` };
-        }
-        if (previous) task.lastOwner = previous;
-        task.owner = action.to;
-        if (!task.participants.includes(action.to)) task.participants.push(action.to);
-        task.status = 'claimed';
-        task.history ||= [];
-        task.history.push({ ts, who: 'system', what: `reassigned by poll ${poll.id}: ${previous || 'unowned'} → ${action.to}` });
-      } else {
-        task.lastOwner = previous;
-        task.owner = null;
-        const dependency = task.dependsOn && this.task(task.dependsOn);
-        task.status = dependency && dependency.status !== 'done' ? 'blocked' : 'open';
-        task.history ||= [];
-        task.history.push({ ts, who: 'system', what: `released by poll ${poll.id} from ${previous || 'unowned'}` });
-      }
-      task.updatedAt = ts;
-      return { ok: true, taskId: task.id, previousOwner: previous, owner: task.owner, status: task.status };
-    }
-
-    const target = this.state.agents[action.agent];
-    if (!target) return { ok: false, error: `No agent called "${action.agent}".` };
-    if (action.type === 'agent_restore') {
-      target.membershipStatus = 'active';
-      target.status = 'idle';
-      target.statusAt = Date.now();
-      target.restoredAt = ts;
-      target.restoredByPoll = poll.id;
-      delete target.blockReason;
-      delete target.kickedAt;
-      delete target.kickedByPoll;
-      return { ok: true, agent: action.agent, membershipStatus: 'active' };
-    }
-    if (Date.now() - (target.lastSeen || 0) < ONLINE_WINDOW_MS) {
-      return { ok: false, error: `${action.agent} came online before the kick poll passed.` };
-    }
-    target.membershipStatus = 'kicked';
-    target.status = 'kicked';
-    target.statusAt = Date.now();
-    target.kickedAt = ts;
-    target.kickedByPoll = poll.id;
-    target.blockReason = `removed by passed poll ${poll.id}`;
-    const releasedTasks = [];
-    for (const task of this.state.tasks) {
-      if (task.owner !== action.agent || task.status === 'done') continue;
-      task.lastOwner = action.agent;
-      task.owner = null;
-      const dependency = task.dependsOn && this.task(task.dependsOn);
-      task.status = dependency && dependency.status !== 'done' ? 'blocked' : 'open';
-      task.updatedAt = ts;
-      task.history ||= [];
-      task.history.push({ ts, who: 'system', what: `owner kicked by poll ${poll.id}; attribution preserved, claim released` });
-      releasedTasks.push(task.id);
-    }
-    return { ok: true, agent: action.agent, membershipStatus: 'kicked', releasedTasks };
   }
 
   // -------------------------------------------------------------- findings
@@ -1184,15 +837,17 @@ export class Room {
     return this.state.advisories.find((a) => a.findingId === findingId) || null;
   }
 
-  // ------------------------------------------------------------------ fences
+  // ------------------------------------------------------------- fences (archived)
   //
   // A "fence" is a piece of Anza ground-truth that forecloses a class of
   // finding: a public §8 issue/PR published before we filed (prior-art —
   // RULES §8 excludes it), or a competitor's report Anza already accepted in
-  // a given file (reworking that class wastes a burn). Fences are additive,
-  // append-only evidence records; nothing here decides eligibility — the
-  // consumer (dashboard/tools) compares `publishedAt`/`mergedAt` against a
-  // finding's `submittedAt` to render the collision warning.
+  // a given file (reworking that class wastes a burn). fence_add is retired
+  // as a tool — new fences arrive only through this method directly (e.g. the
+  // seed script) — but existing fence records stay live data: the Findings,
+  // Submissions, and Advisories panels compare `publishedAt`/`mergedAt`
+  // against a finding's `submittedAt` to render the collision warning, and
+  // the false-negative cross-check reads `paths` on accepted_report fences.
 
   addFence(agent, patch = {}) {
     const fence = {
@@ -1210,7 +865,7 @@ export class Room {
       addedBy: agent,
       createdAt: nowIso(),
     };
-    this.state.fences.push(fence);
+    this.state.archive.fences.push(fence);
     this.touch(agent);
     this.save();
     return fence;
@@ -1218,74 +873,9 @@ export class Room {
 
   /** All fences, most recently published (falling back to added) first. */
   fences() {
-    return [...this.state.fences].sort((a, b) =>
+    return [...this.state.archive.fences].sort((a, b) =>
       String(b.publishedAt || b.mergedAt || b.createdAt || '')
         .localeCompare(String(a.publishedAt || a.mergedAt || a.createdAt || '')));
-  }
-
-  // ----------------------------------------------------------------- goals
-
-  addGoal(agent, { title, detail = '' }) {
-    const goal = {
-      id: this.#id('goal', 'G'),
-      title,
-      detail,
-      status: 'active',
-      createdBy: agent,
-      ts: nowIso(),
-    };
-    this.state.goals.push(goal);
-    this.touch(agent);
-    this.save();
-    this.#wake();
-    return goal;
-  }
-
-  updateGoal(agent, id, { status, detail }) {
-    const goal = this.state.goals.find((g) => g.id === id);
-    if (!goal) return { ok: false, error: `No goal ${id}.` };
-    if (status) goal.status = status;
-    if (detail) goal.detail = detail;
-    this.note(agent, `${id} ${status || 'updated'}`);
-    this.save();
-    return { ok: true, goal };
-  }
-
-  /** Goals carry their own progress, derived from the tasks pointed at them. */
-  goals() {
-    return this.state.goals.map((goal) => {
-      const tasks = this.state.tasks.filter((t) => t.goal === goal.id);
-      const done = tasks.filter((t) => t.status === 'done').length;
-      return {
-        ...goal,
-        taskCount: tasks.length,
-        done,
-        percent: tasks.length ? Math.round((done / tasks.length) * 100) : 0,
-        owners: [...new Set(tasks.map((t) => t.owner).filter(Boolean))],
-      };
-    });
-  }
-
-  // ------------------------------------------------------------ environment
-
-  /**
-   * The facts both agents must agree on before any finding means anything:
-   * which repo, which commit, how it builds. Without this two agents can audit
-   * different code and never notice.
-   */
-  setEnv(agent, key, value) {
-    const previous = this.state.env[key];
-    this.state.env[key] = { value, by: agent, ts: nowIso() };
-    this.save();
-    const changed = previous && previous.value !== value;
-    if (changed) {
-      this.send(agent, {
-        to: 'all',
-        text: `Shared environment changed — ${key} is now "${value}" (was "${previous.value}"). Make sure you are on the same one.`,
-        urgent: true,
-      });
-    }
-    return { key, value, changed, previous: previous?.value };
   }
 
   // ----------------------------------------------------------------- files
@@ -1392,7 +982,9 @@ export class Room {
         delete m.readBy[from];
       }
     }
-    for (const t of this.state.tasks) {
+    // Archived collections keep their agent references consistent too — a
+    // rename should not leave old history pointing at a name nobody answers to.
+    for (const t of this.state.archive.tasks) {
       if (t.owner === from) { t.owner = to; touched += 1; }
       if (t.lastOwner === from) t.lastOwner = to;
       t.participants = (t.participants || []).map((name) => (name === from ? to : name));
@@ -1401,7 +993,7 @@ export class Room {
     }
     for (const f of this.state.findings) if (f.by === from) { f.by = to; touched += 1; }
     for (const l of this.state.log) if (l.who === from) l.who = to;
-    for (const poll of this.state.polls) {
+    for (const poll of this.state.archive.polls) {
       if (poll.createdBy === from) poll.createdBy = to;
       poll.eligible = (poll.eligible || []).map((name) => (name === from ? to : name));
       if (poll.votes?.[from] !== undefined) {
@@ -1436,7 +1028,7 @@ export class Room {
       const known = Object.keys(this.state.agents).join(', ') || '(nobody)';
       return { ok: false, error: `No agent called "${name}". On the board: ${known}` };
     }
-    const owns = this.state.tasks.filter((t) => t.owner === name).map((t) => t.id);
+    const owns = this.state.archive.tasks.filter((t) => t.owner === name).map((t) => t.id);
     const found = this.state.findings.filter((f) => f.by === name).map((f) => f.id);
     const reviewed = Object.values(this.state.files).filter((f) => f.reviews.some((r) => r.agent === name)).map((f) => f.path);
     const said = this.state.messages.filter((m) => m.from === name).length;
@@ -1476,61 +1068,11 @@ export class Room {
     return { ok: true, name, keptMessages, owns, found, reviewed };
   }
 
-  // --------------------------------------------------------------- digest
-
-  /**
-   * After a hundred messages nobody can catch up by scrolling. A digest is the
-   * delta since the last one: what got decided, not what got said.
-   */
-  maybeDigest() {
-    const last = this.state.digests[this.state.digests.length - 1];
-    const sinceSeq = last?.toSeq || 0;
-    const fresh = this.state.messages.filter((m) => (m.seq || 0) > sinceSeq);
-    const elapsed = Date.now() - (last ? Date.parse(last.ts) : Date.parse(this.state.createdAt));
-    if (fresh.length < DIGEST_EVERY_MESSAGES && elapsed < DIGEST_EVERY_MS) return null;
-    if (!fresh.length) return null;
-
-    const since = last ? Date.parse(last.ts) : 0;
-    const after = (ts) => Date.parse(ts) > since;
-    const lines = [];
-
-    const newFindings = this.state.findings.filter((f) => after(f.ts));
-    if (newFindings.length) {
-      lines.push(`${newFindings.length} new finding(s): ` + newFindings.map((f) => `${f.id} [${f.severity}] ${f.title.slice(0, 60)}`).join('; '));
-    }
-    const confirmed = this.state.findings.filter((f) => f.status === 'confirmed');
-    const rejected = this.state.findings.filter((f) => f.status === 'rejected');
-    lines.push(`findings standing: ${confirmed.length} confirmed, ${rejected.length} rejected, ${this.state.findings.length} total`);
-
-    const doneNow = this.state.tasks.filter((t) => t.status === 'done' && after(t.updatedAt));
-    if (doneNow.length) lines.push(`closed: ${doneNow.map((t) => t.id).join(', ')}`);
-    const open = this.state.tasks.filter((t) => t.status === 'open');
-    if (open.length) lines.push(`still open: ${open.map((t) => t.id).join(', ')}`);
-
-    const reviewed = Object.values(this.state.files).filter((f) => after(f.lastTouched || f.firstSeen));
-    if (reviewed.length) lines.push(`${reviewed.length} file(s) reviewed since last digest`);
-    const disputed = this.coverage().filter((f) => f.disagreement);
-    if (disputed.length) lines.push(`DISPUTED: ${disputed.map((f) => f.path).join(', ')}`);
-
-    const quiet = this.roster().filter((a) => !a.online).map((a) => a.name);
-    if (quiet.length) lines.push(`quiet: ${quiet.join(', ')}`);
-    const talkers = [...new Set(fresh.map((m) => m.from))];
-    lines.push(`${fresh.length} messages from ${talkers.join(', ')}`);
-
-    const digest = {
-      id: `D${this.state.digests.length + 1}`,
-      ts: nowIso(),
-      fromSeq: sinceSeq,
-      toSeq: Math.max(...fresh.map((m) => m.seq || 0)),
-      lines,
-    };
-    this.state.digests.push(digest);
-    if (this.state.digests.length > 50) this.state.digests.shift();
-    this.save();
-    return digest;
-  }
-
   // -------------------------------------------------------------- snapshot
+  //
+  // digest generation is retired along with the rest of the ceremony it
+  // summarised (tasks/goals/polls) — `archive.digests` still holds every
+  // digest a room ever produced, readable through the `archive` tool.
 
   board(viewer) {
     return {
@@ -1538,25 +1080,12 @@ export class Room {
       you: viewer,
       agents: this.roster(),
       unreadForYou: viewer ? this.unread(viewer).length : 0,
-      tasks: {
-        open: this.tasks('open'),
-        claimed: this.tasks('claimed'),
-        blocked: this.tasks('blocked'),
-        done: this.tasks('done').slice(-10),
-      },
       findings: this.state.findings.slice(-25),
       submissions: this.submissions(),
       advisories: this.advisories(),
       fences: this.fences(),
-      goals: this.goals(),
       coverage: this.coverage(),
-      env: this.state.env,
       recentLog: this.state.log.slice(-15),
-      digests: this.state.digests.slice(-3),
-      polls: {
-        open: this.listPolls('open'),
-        recent: this.listPolls().filter((poll) => poll.status !== 'open').slice(-10),
-      },
       conflicts: this.conflicts(),
     };
   }

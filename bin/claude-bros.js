@@ -427,10 +427,10 @@ async function hook(flags) {
       peers.length
         ? `Partners: ${peers.map((p) => `${p.name} (${p.online ? 'online' : 'offline'}) — ${p.status}`).join('; ')}`
         : 'No partners have joined yet.',
-      `${board.tasks.open.length} open task(s), ${board.tasks.claimed.length} in progress, ${board.findings.length} finding(s).`,
+      `${board.findings.length} finding(s) so far.`,
       board.unreadForYou ? `You have ${board.unreadForYou} unread message(s) — call the inbox tool.` : '',
       'FIRST: call the bros `join` tool. It returns your full operating briefing for this engagement —',
-      'the shared environment, the goals, what the board needs next, and the rules. Do not start work before reading it.',
+      'the working protocol, what the board needs next, and the rules. Do not start work before reading it.',
     ].filter(Boolean).join('\n');
 
     console.log(JSON.stringify({
@@ -770,8 +770,6 @@ async function board(flags) {
       if (!items.length) out.push(`    ${c.dim('none')}`);
       for (const i of items) out.push(`    ${fmt(i)}`);
     };
-    list('OPEN', b.tasks.open, (t) => `${c.v(t.id)} ${t.title}`);
-    list('IN PROGRESS', b.tasks.claimed, (t) => `${c.v(t.id)} ${t.title} ${c.dim(`— ${t.owner}`)}`);
     list('FINDINGS', b.findings, (f) => {
       const sev = ['high', 'critical'].includes(f.severity) ? c.r(f.severity) : f.severity === 'medium' ? c.y(f.severity) : c.dim(f.severity);
       return `${c.v(f.id)} [${sev}/${f.status}] ${f.title} ${c.dim(`— ${f.by}`)}`;

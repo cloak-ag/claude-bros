@@ -4,6 +4,7 @@
  */
 import { Room } from '../server/room.js';
 import { createServer } from '../server/http.js';
+import { callTool } from '../server/tools.js';
 
 const TOKEN = 'testtoken';
 const HUMAN_TOKEN = 'human-test-token';
@@ -38,8 +39,12 @@ const call = async (agent, name, args = {}) => {
   const out = await rpc(agent, 'tools/call', { name, arguments: args });
   return { text: out.result.content[0].text, isError: Boolean(out.result.isError) };
 };
-/** Ids shift whenever a section is added above, so never hardcode them. */
-const newTask = async (agent, args) => (await call(agent, 'task_add', args)).text.match(/\b(T\d+)\b/)[1];
+/**
+ * task_add/task_claim are retired MCP tools — task_add's write path (`Room#addTask`)
+ * is still real, live internal plumbing (finding_add's `creates_task` uses it), so
+ * tests that need a task go straight through it instead of a tool that no longer exists.
+ */
+const newTask = (agent, args) => room.addTask(agent, args).id;
 
 console.log('\n  handshake');
 const init = await rpc('alpha', 'initialize', {
@@ -55,19 +60,22 @@ check('initialize records client implementation without making it a role',
   room.state.agents.alpha.client?.name === 'test' && !room.state.agents.alpha.role);
 check('notifications get 202, no body', (await rpc('alpha', 'notifications/initialized')) === null);
 const tools = await rpc('alpha', 'tools/list');
-check('tools/list exposes the full surface', tools.result.tools.length === 31, `got ${tools.result.tools.length}`);
+check('tools/list exposes the full surface', tools.result.tools.length === 17, `got ${tools.result.tools.length}`);
 const humanToolsRes = await fetch(`${base}/mcp?agent=operator&token=${HUMAN_TOKEN}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
 });
 const humanTools = await humanToolsRes.json();
 check('only the human credential discovers message moderation tools',
-  humanTools.result.tools.length === 33
+  humanTools.result.tools.length === 19
     && ['message_edit', 'message_delete'].every((name) => humanTools.result.tools.some((tool) => tool.name === name))
     && !tools.result.tools.some((tool) => tool.name.startsWith('message_')));
 check('every tool has a schema', tools.result.tools.every((t) => t.inputSchema?.type === 'object'));
-check('graph and governance are discoverable tools', ['graph', 'poll_create', 'poll_vote', 'polls']
-  .every((name) => tools.result.tools.some((tool) => tool.name === name)));
+check('the read-only archive tool is discoverable, retired tools are gone',
+  tools.result.tools.some((tool) => tool.name === 'archive')
+    && ['task_add', 'task_claim', 'task_update', 'goal_add', 'goal_update', 'goals',
+      'poll_create', 'poll_vote', 'polls', 'env_set', 'digest', 'fence_add', 'fences', 'related', 'graph']
+      .every((name) => !tools.result.tools.some((tool) => tool.name === name)));
 check('monitor heartbeat is discoverable', tools.result.tools.some((tool) => tool.name === 'monitor'));
 const resources = await rpc('alpha', 'resources/list');
 check('MCP advertises graph, capability, and connection resources',
@@ -138,36 +146,7 @@ check('monitor heartbeat reads mail and teaches the next cycle',
   monitorHeartbeat.text.includes('MONITOR CYCLE COMPLETE') && room.state.agents.alpha.protocolSeen === '2026-08-03-monitor-v1');
 await call('beta', 'join');
 const board = await call('alpha', 'board');
-check('alpha sees beta on the board', board.text.includes('beta') && board.text.includes('available'));
-
-console.log('\n  task collision guard');
-await call('alpha', 'task_add', { title: 'Review password reset flow', scope: 'auth' });
-const claimed = await call('alpha', 'task_claim', { id: 'T1' });
-check('first claim succeeds', !claimed.isError && claimed.text.includes('You own T1'));
-await call('beta', 'inbox'); // collaboration event: see who claimed it before attempting overlap
-const tamper = await call('beta', 'task_update', { id: 'T1', status: 'open' });
-check('a non-owner cannot bypass governance by reopening another agent task',
-  tamper.isError && tamper.text.includes('task_reassign'));
-const stolen = await call('beta', 'task_claim', { id: 'T1' });
-check('second agent is blocked from the same task',
-  stolen.isError && stolen.text.includes('being worked by alpha') && stolen.text.includes('last active'), stolen.text);
-const done = await call('alpha', 'task_update', { id: 'T1', status: 'done', notes: 'tokens are 256-bit, ruled out' });
-check('task can be completed', done.text.includes('now done'));
-
-console.log('\n  task dependencies');
-// T1 is already done above — so a task depending on it must be claimable right away.
-await call('alpha', 'task_add', { title: 'Verify the password reset fix', depends_on: 'T1' });
-await call('beta', 'inbox'); // consume the completed-task handoff before choosing the next task
-const depMet = await call('beta', 'task_claim', { id: 'T2' });
-check('a task whose dependency is done can be claimed', !depMet.isError, depMet.text);
-await call('alpha', 'task_add', { title: 'Exploit the password reset', scope: 'auth' });
-await call('alpha', 'task_add', { title: 'Write the advisory', depends_on: 'T3' });
-const depBlock = await call('beta', 'task_claim', { id: 'T4' });
-check('a task with an unfinished dependency is rejected as blocked',
-  depBlock.isError && depBlock.text.includes('depends on T3') && room.task('T4').status === 'blocked', depBlock.text);
-const depOpen = await call('alpha', 'task_update', { id: 'T3', status: 'done' });
-check('completing the dependency reopens the blocked task', room.task('T4').status === 'open', JSON.stringify(room.task('T4')));
-await call('beta', 'inbox'); // consume the dependency-complete broadcast
+check('alpha sees beta on the board', board.text.includes('beta') && board.text.includes('idle'));
 
 console.log('\n  messaging');
 await call('beta', 'send', { text: 'Found a reflected param on /search', to: 'alpha' });
@@ -328,22 +307,25 @@ check('advisories lists what was upserted', advisoriesList.text.includes('GHSA-t
 const missingGhsa = await call('alpha', 'advisory_upsert', {});
 check('advisory_upsert requires ghsa_id', missingGhsa.isError);
 
-const fenceCreate = await call('beta', 'fence_add', {
+// fence_add is a retired MCP tool; fences are still real, live data (the
+// Findings/Submissions/Advisories collision banners and the false-negative
+// cross-check depend on them) — addFence remains callable directly, exactly
+// like the seed script uses it.
+const fenceCreate = room.addFence('beta', {
   kind: 'section8_issue',
   ref: 'agave#14335',
   url: 'https://github.com/anza-xyz/agave/issues/14335',
   title: 'Reduce the bound of vote ingest in BLS sigverify',
   quote: 'we admit votes from root_slot - 8 to root_slot + 30k.',
-  published_at: '2026-08-05T12:47:35Z',
-  applies_to: ['F1'],
+  publishedAt: '2026-08-05T12:47:35Z',
+  appliesTo: ['F1'],
   paths: ['bls-sigverify/src/bls_sigverifier.rs'],
   note: 'Published before F1 was filed.',
 });
-check('fence_add records a §8 fence with an id', /"id": "FN\d+"/.test(fenceCreate.text) && fenceCreate.text.includes('agave#14335'));
-const fencesList = await call('alpha', 'fences');
-check('fences lists what was added', fencesList.text.includes('agave#14335') && fencesList.text.includes('section8_issue'));
-const missingKind = await call('beta', 'fence_add', { ref: 'agave#1' });
-check('fence_add requires kind', missingKind.isError);
+check('addFence records a §8 fence with an id', /^FN\d+$/.test(fenceCreate.id) && fenceCreate.ref === 'agave#14335');
+check('fences() lists what was added', room.fences().some((f) => f.ref === 'agave#14335' && f.kind === 'section8_issue'));
+check('the fence is archived, readable via the archive tool',
+  (await call('alpha', 'archive', { kind: 'fences' })).text.includes('agave#14335'));
 
 console.log('\n  finding → task auto-link');
 const xssFindingBefore = room.state.findings.length;
@@ -355,11 +337,13 @@ await call('beta', 'finding_add', {
   creates_task: true,
 });
 const xssFinding = room.state.findings[xssFindingBefore];
-const linkTask = room.state.tasks.find((t) => t.title.includes(`Verify ${xssFinding.id}`));
-check('a finding with creates_task spawns a verification task', Boolean(linkTask), JSON.stringify(room.state.tasks));
+const linkTask = room.state.archive.tasks.find((t) => t.title.includes(`Verify ${xssFinding.id}`));
+check('a finding with creates_task spawns a verification task', Boolean(linkTask), JSON.stringify(room.state.archive.tasks));
 check('the verification task is assigned to the partner, not the reporter',
   linkTask?.owner === 'alpha', `owner=${linkTask?.owner}`);
 check('the finding records its verification task', xssFinding?.verificationTask === linkTask?.id);
+check('the auto-created task lives in the archive, readable via the archive tool',
+  (await call('alpha', 'archive', { kind: 'tasks', id: linkTask.id })).text.includes(linkTask.id));
 
 console.log('\n  board search');
 const searchHit = await (await fetch(`${base}/api/search?q=idor&token=${TOKEN}`)).json();
@@ -385,13 +369,13 @@ const older = `${process.env.TMPDIR || '/tmp'}/bros-old-${process.pid}.json`;
 }));
 const healed = new Room({ name: 'old', file: older });
 check('undefined counters are reset to a number', Number.isFinite(healed.state.counters.goal));
-check('broken ids are regenerated uniquely',
-  new Set(healed.state.goals.map((g) => g.id)).size === 2 && healed.state.goals.every((g) => /^G\d+$/.test(g.id)),
-  JSON.stringify(healed.state.goals.map((g) => g.id)));
-check('references are re-pointed at the new id', healed.state.tasks[0].goal === healed.state.goals[0].id);
-check('sound ids are left alone', healed.state.tasks[1].id === 'T2');
+check('broken ids are regenerated uniquely, now inside the archive',
+  new Set(healed.state.archive.goals.map((g) => g.id)).size === 2 && healed.state.archive.goals.every((g) => /^G\d+$/.test(g.id)),
+  JSON.stringify(healed.state.archive.goals.map((g) => g.id)));
+check('references are re-pointed at the new id', healed.state.archive.tasks[0].goal === healed.state.archive.goals[0].id);
+check('sound ids are left alone', healed.state.archive.tasks[1].id === 'T2');
 check('the counter continues past ids already in use', healed.state.counters.task >= 2);
-check('goal progress works again after healing', healed.goals()[0].done === 1);
+check('top-level tasks/goals no longer exist once archived', healed.state.tasks === undefined && healed.state.goals === undefined);
 const unseq = `${process.env.TMPDIR || '/tmp'}/bros-unseq-${process.pid}.json`;
 (await import('node:fs')).writeFileSync(unseq, JSON.stringify({
   room: 'unseq', agents: {}, counters: { message: 2 },
@@ -405,16 +389,81 @@ check('the sequence counter continues from the history', seqd.state.counters.seq
 (await import('node:fs')).unlinkSync(unseq);
 (await import('node:fs')).unlinkSync(older);
 
+console.log('\n  archive migration is idempotent and lossless');
+{
+  const fsMod = await import('node:fs');
+  const pathMod = await import('node:path');
+  const osMod = await import('node:os');
+  const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'bros-archive-'));
+  const file = pathMod.join(dir, 'legacy.json');
+  const nowTs = new Date().toISOString();
+  // Exactly the pre-archive shape the live relay's data/bounty.json is in:
+  // top-level tasks/goals/polls/digests/env/fences, 208/37/50/14-scale but
+  // small here — the migration path does not care about volume.
+  const legacyState = {
+    room: 'legacy-archive', agents: {}, findings: [], files: {}, messages: [], log: [], aliases: {},
+    counters: { message: 0, task: 0, finding: 0, goal: 0, poll: 0, seq: 0, fence: 0 },
+    tasks: [{ id: 'T1', title: 'old task', status: 'open', history: [] }, { id: 'T2', title: 'old task 2', status: 'done', history: [] }],
+    goals: [{ id: 'G1', title: 'old goal', status: 'active' }],
+    polls: [{ id: 'P1', question: 'old poll', status: 'passed', votes: {}, eligible: ['x'], createdAt: nowTs, updatedAt: nowTs }],
+    digests: [{ id: 'D1', ts: nowTs, fromSeq: 0, toSeq: 3, lines: ['3 messages from x'] }],
+    env: { repo: { value: 'agave', by: 'x', ts: nowTs }, commit: { value: 'deadbeef', by: 'x', ts: nowTs } },
+    fences: [{ id: 'FN1', kind: 'accepted_report', ref: 'agave#1', paths: ['a.rs'] }],
+  };
+  fsMod.writeFileSync(file, JSON.stringify(legacyState));
+
+  const firstLoad = new Room({ name: 'legacy-archive', file });
+  check('migration is lossless: every legacy record survives under archive',
+    firstLoad.state.archive.tasks.length === 2 && firstLoad.state.archive.goals.length === 1
+      && firstLoad.state.archive.polls.length === 1 && firstLoad.state.archive.digests.length === 1
+      && firstLoad.state.archive.fences.length === 1
+      && Object.keys(firstLoad.state.archive.env).length === 2,
+    JSON.stringify(firstLoad.state.archive));
+  check('migrated records keep their original ids and fields verbatim',
+    firstLoad.state.archive.fences[0].ref === 'agave#1'
+      && firstLoad.state.archive.env.commit.value === 'deadbeef'
+      && firstLoad.state.archive.polls[0].status === 'passed');
+  check('the top-level legacy keys are gone once migrated',
+    firstLoad.state.tasks === undefined && firstLoad.state.goals === undefined
+      && firstLoad.state.polls === undefined && firstLoad.state.digests === undefined
+      && firstLoad.state.env === undefined && firstLoad.state.fences === undefined);
+
+  await new Promise((resolve) => setTimeout(resolve, 350)); // let the debounced save land
+  const secondLoad = new Room({ name: 'legacy-archive', file });
+  check('a second load of the already-migrated file does not duplicate records',
+    secondLoad.state.archive.tasks.length === 2 && secondLoad.state.archive.goals.length === 1
+      && secondLoad.state.archive.polls.length === 1 && secondLoad.state.archive.digests.length === 1
+      && secondLoad.state.archive.fences.length === 1
+      && Object.keys(secondLoad.state.archive.env).length === 2,
+    JSON.stringify(secondLoad.state.archive));
+
+  const readAll = await callTool(firstLoad, 'agent-x', 'archive', {});
+  check('archive with no kind returns a per-kind summary',
+    readAll.content[0].text.includes('"tasks": 2') && readAll.content[0].text.includes('"goals": 1')
+      && readAll.content[0].text.includes('"env": 2'), readAll.content[0].text);
+  const readTasks = await callTool(firstLoad, 'agent-x', 'archive', { kind: 'tasks' });
+  check('archive with kind=tasks returns the archived task records',
+    readTasks.content[0].text.includes('T1') && readTasks.content[0].text.includes('T2'));
+  const readOne = await callTool(firstLoad, 'agent-x', 'archive', { kind: 'fences', id: 'FN1' });
+  check('archive with kind and id returns a single record', readOne.content[0].text.includes('agave#1'));
+  const readEnv = await callTool(firstLoad, 'agent-x', 'archive', { kind: 'env' });
+  check('archive with kind=env returns the fact map, not a list', readEnv.content[0].text.includes('deadbeef'));
+  const badKind = await callTool(firstLoad, 'agent-x', 'archive', { kind: 'bogus' });
+  check('archive rejects an unknown kind', badKind.isError);
+
+  fsMod.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log('\n  join briefing');
 const fresh = await call('gamma', 'join');
 check('the briefing names the agent', fresh.text.includes('You are exactly "gamma"'));
 check('the briefing makes connection identity authoritative',
   fresh.text.includes('sole source of truth') && fresh.text.includes('relay migrations'));
 check('it lists an ordered set of next actions', fresh.text.includes('## DO THESE NOW, IN ORDER'));
-check('it teaches the whole protocol', ['GOALS', 'TASKS', 'FILES', 'FINDINGS'].every((s) => fresh.text.includes(s)));
+check('it teaches the working protocol', ['FILES', 'FINDINGS', 'MONITOR', 'ARCHIVE'].every((s) => fresh.text.includes(s)));
+check('it points retired systems at the read-only archive tool',
+  fresh.text.includes('retired') && fresh.text.includes('archive'));
 check('it carries the ground rules', fresh.text.includes('authorizes') && fresh.text.includes('live-fire'));
-check('with no environment set it says to set one', fresh.text.includes('has recorded the shared environment'));
-check('with no goals it says to propose them', fresh.text.includes('NO GOALS yet'));
 check('the full board follows the briefing', fresh.text.includes('# Board:'));
 
 check('a human posting via REST does not join the roster', await (async () => {
@@ -438,29 +487,6 @@ await call('oldtimer', 'join', {});
 check('calling join clears it', !(await call('oldtimer', 'board')).text.includes('have not read the operating briefing'));
 check('briefed agents are never nagged', !(await call('alpha', 'board')).text.includes('have not read the operating briefing'));
 
-console.log('\n  shared environment');
-await call('alpha', 'env_set', { key: 'repo', value: 'agave' });
-const pinned = await call('alpha', 'env_set', { key: 'commit', value: '4f21b82a54' });
-check('env values are recorded', pinned.text.includes('Set commit = 4f21b82a54'));
-check('the environment shows on the board', (await call('beta', 'board')).text.includes('repo = agave'));
-const moved = await call('beta', 'env_set', { key: 'commit', value: 'deadbeef' });
-check('changing a pinned value is called out', moved.text.includes('"4f21b82a54" → "deadbeef"'));
-check('and everyone is alerted about it', (await call('alpha', 'inbox')).text.includes('Shared environment changed'));
-const briefed = await call('gamma', 'join', {});
-check('a later briefing reflects the environment that now exists',
-  briefed.text.includes('## SHARED ENVIRONMENT') && briefed.text.includes('repo = agave'));
-
-console.log('\n  goals');
-await call('alpha', 'goal_add', { title: 'Find consensus-breaking bugs in votor', detail: 'agave @ 4f21b82a54' });
-const badGoal = await call('alpha', 'task_add', { title: 'x', goal: 'G99' });
-check('linking to a goal that does not exist is refused', badGoal.isError && badGoal.text.includes('No goal G99'));
-await newTask('alpha', { title: 'Audit vote aggregation', goal: 'G1' });
-const goalTask = await newTask('alpha', { title: 'Audit cert verification', goal: 'G1' });
-await call('alpha', 'task_update', { id: goalTask, status: 'done' });
-const goalList = await call('beta', 'goals');
-check('goal progress counts linked tasks', goalList.text.includes('1/2 tasks'), goalList.text);
-check('a new goal is broadcast to the others', (await call('beta', 'inbox')).text.includes('New shared goal G1'));
-
 console.log('\n  file coverage');
 await call('alpha', 'file_review', { path: 'votor/src/consensus_pool.rs', verdict: 'clean', note: 'insert_certificate paths check out' });
 const agreed = await call('beta', 'file_review', { path: 'votor/src/consensus_pool.rs', verdict: 'clean', note: 'agree' });
@@ -476,14 +502,14 @@ const one = await call('alpha', 'files', { path: 'votor/src/event_handler.rs' })
 check('a single file shows every reviewer and note', one.text.includes('rooting logic looks off') && one.text.includes('looks fine to me'));
 check('an unreviewed file says so', (await call('alpha', 'files', { path: 'nope.rs' })).text.includes('You are first'));
 const boardWithAll = await call('alpha', 'board');
-check('goals and coverage appear on the board agents read',
-  boardWithAll.text.includes('## Goals') && boardWithAll.text.includes('## File coverage'), '');
+check('coverage appears on the board agents read', boardWithAll.text.includes('## File coverage'), '');
 await call('alpha', 'finding_add', { title: 'Cert reuse', severity: 'high', target: 'votor/src/consensus_pool.rs:412',
   evidence: 'the same certificate is accepted twice across epoch boundaries' });
 check('findings auto-link to the file they name',
   room.state.files['votor/src/consensus_pool.rs'].findings.length === 1);
 
 console.log('\n  hook endpoint');
+await call('alpha', 'inbox'); // drain everything accumulated above so the count below is exact
 await call('beta', 'send', { text: 'one more thing', to: 'alpha' });
 const unread = await (await fetch(`${base}/api/unread?agent=alpha&token=${TOKEN}`)).json();
 check('the Stop hook can see pending mail', unread.count === 1 && unread.messages[0].text === 'one more thing');
@@ -491,9 +517,10 @@ const stillThere = await (await fetch(`${base}/api/unread?agent=alpha&token=${TO
 check('peeking does not consume mail', stillThere.count === 1);
 
 console.log('\n  rename');
-const survivor = await newTask('alpha', { title: 'Task that must survive a rename' });
-await call('alpha', 'inbox'); await call('alpha', 'board');
-await call('alpha', 'task_claim', { id: survivor });
+// task_claim is a retired tool; addTask can still assign directly (as
+// finding_add's creates_task does), which is enough to prove a rename
+// carries ownership through the archive.
+const survivor = newTask('alpha', { title: 'Task that must survive a rename', assignTo: 'alpha' });
 const renamed = room.rename('alpha', 'renamed-agent');
 check('rename reports what it moved', renamed.ok && renamed.references > 0, JSON.stringify(renamed));
 check('the old name is gone', !room.state.agents.alpha);
@@ -550,53 +577,6 @@ const good = await call('alpha', 'finding_add', {
 });
 check('a finding with real evidence is accepted', !good.isError && good.text.includes('Logged'));
 
-console.log('\n  board-read before claiming');
-const bId = await newTask('beta', { title: 'guarded task' });
-await call('alpha', 'inbox');
-room.state.agents.alpha.boardAt = 0;
-const blind = await call('alpha', 'task_claim', { id: bId });
-check('claiming without looking at the board is refused', blind.isError && blind.text.includes('Call `board` first'));
-await call('alpha', 'board');
-await call('alpha', 'inbox');
-check('claiming after reading the board works', !(await call('alpha', 'task_claim', { id: bId })).isError);
-await call('beta', 'send', { text: 'unread blocker', to: 'alpha' });
-const bId2 = await newTask('beta', { title: 'second guarded task' });
-const withMail = await call('alpha', 'task_claim', { id: bId2 });
-check('claiming with unread mail is refused', withMail.isError && withMail.text.includes('unread message'));
-await call('alpha', 'inbox');
-
-console.log('\n  stale claims lapse');
-const lapsed = await newTask('beta', { title: 'held by someone who vanished' });
-await call('beta', 'inbox'); await call('beta', 'board');
-const heldOk = await call('beta', 'task_claim', { id: lapsed });
-check('the owner could claim it in the first place', !heldOk.isError, heldOk.text);
-room.state.agents.beta.lastSeen = Date.now() - 40 * 60_000;
-check('a claim from a silent owner is released', room.releaseStaleClaims().includes(lapsed));
-check('the task is open again', room.task(lapsed).status === 'open');
-check('who held it is remembered', room.task(lapsed).lastOwner === 'beta');
-room.state.agents.beta.lastSeen = Date.now();
-
-console.log('\n  claims lapse on any glance, not just board/claim');
-const dashLapse = await newTask('beta', { title: 'lapsed by a plain state read' });
-await call('beta', 'inbox'); await call('beta', 'board');
-await call('beta', 'task_claim', { id: dashLapse });
-room.state.agents.beta.lastSeen = Date.now() - 40 * 60_000;
-await (await fetch(`${base}/api/state?token=${TOKEN}`)).json();
-check('a dashboard state read lapses a stale claim', room.task(dashLapse).status === 'open');
-room.state.agents.beta.lastSeen = Date.now();
-
-console.log('\n  claim window is tunable via env');
-const winTask = await newTask('beta', { title: 'short-window claim' });
-await call('beta', 'inbox'); await call('beta', 'board');
-await call('beta', 'task_claim', { id: winTask });
-room.state.agents.beta.lastSeen = Date.now() - 7 * 60_000;
-const prevWin = process.env.BROS_CLAIM_STALE_MS;
-process.env.BROS_CLAIM_STALE_MS = '6000';
-const releasedWin = room.releaseStaleClaims();
-if (prevWin === undefined) delete process.env.BROS_CLAIM_STALE_MS; else process.env.BROS_CLAIM_STALE_MS = prevWin;
-check('a 6-second window releases a 7-minute-silent owner', releasedWin.includes(winTask));
-room.state.agents.beta.lastSeen = Date.now();
-
 console.log('\n  message dedup, sequencing, threading');
 const first = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
 const again = await call('beta', 'send', { text: 'exactly the same words', to: 'alpha' });
@@ -618,12 +598,6 @@ check('the refusal says what to do', stolen2.error.includes('different --as name
 room.state.agents.zulu.lastSeen = Date.now() - 45 * 60_000;
 check('the name frees up once that machine goes quiet', room.join('zulu', { host: 'host-b.example' }).ok);
 room.state.agents.zulu.hosts = ['host-b.example'];  // tidy up the deliberate collision
-
-console.log('\n  digest');
-for (let i = 0; i < 22; i += 1) await call('beta', 'send', { text: `digest filler ${i}` });
-const dig = await call('alpha', 'digest');
-check('a digest is generated from activity', dig.text.includes('## D') && dig.text.includes('findings standing'));
-check('it summarises rather than replays', !dig.text.includes('digest filler 3'));
 
 console.log('\n  identity clash detection');
 check('one machine is not a clash', room.recordEndpoint('alpha', 'relay-host') === null);
@@ -739,15 +713,18 @@ console.log('\n  egress: compression and revalidation');
   check('the ETag moves when the board changes', afterChange.headers.get('etag') !== tag);
 }
 
-console.log('\n  shared-brain graph');
+console.log('\n  shared-brain graph (module intact; graph/related MCP tools retired)');
 {
+  // graph.js itself is untouched — only the `graph`/`related` MCP tools (and
+  // the /graph web page) that exposed it to agents are gone. state.tasks/
+  // state.goals no longer exist (archived), so it now degrades gracefully to
+  // agent/file/finding nodes instead of erroring.
   const { buildGraph, relatedTo } = await import('../server/graph.js');
   const g = buildGraph(room.state);
-  check('the graph has a node per entity',
-    g.nodes.some((n) => n.type === 'agent') && g.nodes.some((n) => n.type === 'task')
-    && g.nodes.some((n) => n.type === 'finding') && g.nodes.some((n) => n.type === 'file'));
-  check('tasks link to the goal they serve', g.edges.some((e) => e.kind === 'serves'));
-  check('agents link to their current or completed work', g.edges.some((e) => ['working_on', 'built'].includes(e.kind)));
+  check('the graph still has a node per non-archived entity',
+    g.nodes.some((n) => n.type === 'agent') && g.nodes.some((n) => n.type === 'finding') && g.nodes.some((n) => n.type === 'file'));
+  check('it degrades gracefully with no task/goal nodes, rather than erroring',
+    !g.nodes.some((n) => n.type === 'task') && !g.nodes.some((n) => n.type === 'goal'));
   check('reviewers link to the files they read', g.edges.some((e) => e.kind === 'reviewed'));
   check('every edge points at a node that exists', (() => {
     const ids = new Set(g.nodes.map((n) => n.id));
@@ -772,13 +749,11 @@ console.log('\n  shared-brain graph');
   check('the recorded link is not marked inferred', explicit?.inferred === false);
   check('the guessed link IS marked inferred, never passed off as recorded', inferred?.inferred === true);
 
-  const rel = await call('alpha', 'related', { id: 'votor/src/prose_target.rs' });
-  check('the related tool walks the graph', rel.text.includes('Directly connected'), rel.text.slice(0, 120));
-  check('it reports how things connect', /\[(reviewed|found_in|working_on|built|serves|reported)\]/.test(rel.text));
-  const graphView = await call('alpha', 'graph', { type: 'agent' });
-  check('the graph is directly readable through MCP', graphView.text.includes('# Shared brain graph') && graphView.text.includes('agent:'));
-  check('an unknown id fails usefully', (await call('alpha', 'related', { id: 'nope-nope' })).isError);
-  check('related accepts a finding id too', !(await call('alpha', 'related', { id: 'F1' })).isError);
+  const rel = relatedTo(room.state, 'votor/src/prose_target.rs', 1);
+  check('relatedTo() still walks the graph directly', rel.neighbours.length > 0, JSON.stringify(rel?.start));
+  check('the graph/related tools are gone from the MCP surface',
+    (await call('alpha', 'related', { id: 'votor/src/prose_target.rs' })).text.includes('Unknown tool')
+      && (await call('alpha', 'graph', {})).text.includes('Unknown tool'));
 }
 
 console.log('\n  dashboard');
@@ -800,7 +775,7 @@ check('every element the dashboard script writes to exists in its markup', (() =
 check('dashboard tab links carry the token and point at real routes',
   /class="tab[^"]*" href="\/\?token=/.test(pageText) && /class="tab[^"]*" href="\/help\?token=/.test(pageText));
 check('dashboard ships the seconds-granular heartbeat', pageText.includes('last activity') && pageText.includes('quiet'));
-check('dashboard separates active and archived work', pageText.includes('Active queue') && pageText.includes('Standing &amp; actionable'));
+check('dashboard separates standing findings from a rejected archive', pageText.includes('Standing &amp; actionable') && pageText.includes('Rejected'));
 check('dashboard has a first-class submissions section',
   pageText.includes('<h2>Submissions</h2>') && pageText.includes('Ready to submit')
     && pageText.includes('Needs report work') && pageText.includes('Submitted'));
@@ -818,13 +793,18 @@ check('live refresh preserves selection, modal, scroll and focus state',
     && pageText.includes('modalScroll') && pageText.includes('data-preserve-scroll'));
 check('dashboard separates removed identities from current members',
   pageText.includes('Current members') && pageText.includes('Removed identities'));
-check('dashboard includes governance and contribution history', pageText.includes('Polls — team decisions') && pageText.includes('built/completed'));
 check('dashboard distinguishes MCP client implementation from agent role',
   pageText.includes('Client: ') && pageText.includes('a.client.title || a.client.name'));
-check('shared environment uses separated responsive key/value rows',
-  pageText.includes('class="env-row"')
-    && pageText.includes('grid-template-columns:minmax(140px,220px) minmax(0,1fr)')
-    && !pageText.includes('<div class="envgrid">'));
+check('the retired Goals/Tasks/Polls/Digest/§8-fences panels are gone from the dashboard',
+  !pageText.includes('<h2>Goals</h2>') && !pageText.includes('<h2>Tasks</h2>')
+    && !pageText.includes('Polls — team decisions') && !pageText.includes('Digest — what got decided')
+    && !pageText.includes('§8 fences') && !pageText.includes('<h2>Shared environment</h2>')
+    && !pageText.includes('class="env-row"'));
+check('the Agents panel is compact — presence and a one-line status, no task lists',
+  pageText.includes('Agents — live heartbeat') && pageText.includes('status-line')
+    && !pageText.includes('built/completed') && !pageText.includes('no claimed task'));
+check('the false-negative cross-check panel (fed by archived fences) is still present',
+  pageText.includes('Cleared files with accepted bugs') && pageText.includes('acceptedFences'));
 check('coverage is a searchable full-width ledger', pageText.includes('coverage-filter') && pageText.includes('data-coverage-row'));
 check('dashboard renders message threads', pageText.includes('replyto') && pageText.includes('thread'));
 check('dashboard gives traffic a tall viewport and Markdown renderer',

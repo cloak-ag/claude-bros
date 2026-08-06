@@ -4,8 +4,6 @@
  * written to push toward "check before you work, announce after you find".
  */
 
-import { buildGraph, relatedTo } from './graph.js';
-
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 const MONITOR_PROTOCOL = '2026-08-03-monitor-v1';
 const MONITOR_UPDATE =
@@ -23,7 +21,7 @@ export const TOOL_DEFS = [
     name: 'join',
     title: 'Announce yourself',
     description:
-      'Register the exact identity already attached to this MCP connection AND read the operating briefing. The tool takes no name argument: never copy a name from documentation, another agent, or a prompt, and never rename yourself during a relay migration. Returns the shared environment, active goals, working protocol, ground rules, and what this board needs next. Call it first thing in every session. It is safe to repeat; it preserves your identity and work.',
+      'Register the exact identity already attached to this MCP connection AND read the operating briefing. The tool takes no name argument: never copy a name from documentation, another agent, or a prompt, and never rename yourself during a relay migration. Returns the working protocol, ground rules, and what this board needs next. Call it first thing in every session. It is safe to repeat; it preserves your identity and work.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -87,72 +85,6 @@ export const TOOL_DEFS = [
     },
   },
   {
-    name: 'task_add',
-    title: 'Add work to the shared board',
-    description:
-      'Put a unit of work on the shared board so it gets done exactly once. Break the engagement into these up front, then claim the ones you will do.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        title: str('One line, imperative. e.g. "Review password reset token generation".'),
-        scope: str('Which surface this touches, e.g. "backend/auth".'),
-        notes: str('Context, hypotheses, or anything the person who picks it up needs.'),
-        assign_to: str('Optionally assign directly to an agent by name instead of leaving it open.'),
-        goal: str('Goal id this serves, e.g. "G1". Link it — that is what makes goal progress real.'),
-        depends_on: { type: 'string', description: 'Optional task id (e.g. "T3") that must be done before this task can be claimed. Keeps the board from drifting into unblocked work.' },
-      },
-      required: ['title'],
-    },
-  },
-  {
-    name: 'env_set',
-    title: 'Record a shared environment fact',
-    description:
-      'Pin down what you and your partner are both working against: the repo, the exact commit, how it builds, the live target URL. Set these before real work starts — if two agents audit different commits, every finding is worthless. Changing an existing value alerts everyone.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        key: str('Short key. Conventional ones: repo, commit, build, run, target, scope_url, notes.'),
-        value: str('The value, e.g. "agave @ 4f21b82a54" or "cargo build -p solana-votor".'),
-      },
-      required: ['key', 'value'],
-    },
-  },
-  {
-    name: 'goal_add',
-    title: 'Set a shared goal',
-    description:
-      'Declare what this engagement is actually trying to achieve, above the level of individual tasks. Agree these with your partner early; tasks then link to them so everyone can see whether the work is converging on the goal or drifting.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        title: str('The objective, e.g. "Find consensus-breaking bugs in the Alpenglow votor path".'),
-        detail: str('What success looks like, what is in and out of scope.'),
-      },
-      required: ['title'],
-    },
-  },
-  {
-    name: 'goal_update',
-    title: 'Update a goal',
-    description: 'Mark a goal done or dropped, or refine what it means. Drop goals that turn out to be dead ends so the board reflects reality.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: str('Goal id, e.g. "G1".'),
-        status: str('active | done | dropped', { enum: ['active', 'done', 'dropped'] }),
-        detail: str('Revised description.'),
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'goals',
-    title: 'List goals and progress',
-    description: 'See every goal with how many of its tasks are done and who is working on them.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
     name: 'file_review',
     title: 'Record that you read a file',
     description:
@@ -178,78 +110,6 @@ export const TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: { path: str('Optional: one specific file to inspect in full.') },
-    },
-  },
-  {
-    name: 'task_claim',
-    title: 'Claim a task',
-    description:
-      'Atomically take ownership of an open task. If your partner already claimed it you will be told to pick another — that is the collision guard, respect it and move on.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Task id, e.g. "T3".') },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'task_update',
-    title: 'Update a task',
-    description: 'Move a task to in-progress/blocked/done and leave notes on what you learned, including dead ends (a ruled-out surface is useful to your partner).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: str('Task id.'),
-        status: str('One of: open, claimed, blocked, done.', { enum: ['open', 'claimed', 'blocked', 'done'] }),
-        notes: str('What happened. Dead ends count — say what you ruled out.'),
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'poll_create',
-    title: 'Open a team decision',
-    description:
-      'Create a durable team poll. Use a plain decision for coordination, or attach an action to release/reassign a task, remove an inactive agent, or restore one. Actions execute automatically only after the required votes pass; historical work attribution is preserved.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        question: str('The yes/no question the team is deciding.'),
-        reason: str('Concrete context teammates need before voting.'),
-        action: str('Optional action: task_reassign | task_release | agent_kick | agent_restore.', {
-          enum: ['task_reassign', 'task_release', 'agent_kick', 'agent_restore'],
-        }),
-        task_id: str('Task id for task_reassign/task_release.'),
-        assign_to: str('Agent receiving work for task_reassign.'),
-        agent: str('Agent identity for agent_kick/agent_restore. Only inactive agents can be kicked.'),
-      },
-      required: ['question'],
-    },
-  },
-  {
-    name: 'poll_vote',
-    title: 'Vote on a team decision',
-    description:
-      'Cast your one durable vote on an open poll. Read the question, reason, and attached action with polls first. A passed action is applied atomically.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: str('Poll id, e.g. "P3".'),
-        choice: str('yes | no | abstain', { enum: ['yes', 'no', 'abstain'] }),
-      },
-      required: ['id', 'choice'],
-    },
-  },
-  {
-    name: 'polls',
-    title: 'Read team decisions',
-    description:
-      'List open or decided team polls with vote thresholds, tallies, actions, and execution results. Call this with board and inbox whenever you rejoin or become available.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        status: str('Optional: open | passed | rejected.', { enum: ['open', 'passed', 'rejected'] }),
-        id: str('Optional poll id to read in full.'),
-      },
     },
   },
   {
@@ -389,74 +249,19 @@ export const TOOL_DEFS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
-    name: 'fence_add',
-    title: 'Record a §8 prior-art exclusion or a competitor-accepted report',
+    name: 'archive',
+    title: 'Read retired systems (read-only)',
     description:
-      'Log a piece of Anza ground-truth that forecloses a class of finding, so nobody wastes another 0.5 SOL burn on it: either a public issue/PR that predates our filing (RULES §8 excludes prior-art — this is exactly what would have caught F15 5h25m before it was filed, had it existed on the board), or a competitor\'s bug report Anza already accepted/merged in a given file (reworking that same class is a guaranteed rejection, e.g. five agents called block_id_repair_service.rs "clean" right before Anza merged three PRs crediting OTHER hunters in that exact file). Set applies_to to the finding id(s) this fences off and paths to the repo file(s) it covers — both drive the dashboard\'s prior-art collision warning and the cleared-files-with-accepted-bugs cross-check. Call this the moment you spot a public issue, merged PR, or advisory disposition that rules out a class of bug — before, not after, someone else burns a submission on it.',
+      'This is where the history of every retired system lives: tasks, goals, polls, digests, shared-environment facts, and §8/prior-art fences. Those ceremonies were removed from active use because the evidence — findings, file reviews, submissions, advisories — carried the real value and the process around it did not; the archive keeps every record instead of deleting it, so any agent can still check it autonomously. This tool is READ-ONLY: nothing here can be created, claimed, or voted on any more. Call it with no kind for a count per kind, or with a kind to read the records themselves, newest first.',
     inputSchema: {
       type: 'object',
       properties: {
-        kind: str('section8_issue | section8_pr | accepted_report | by_design | duplicate', {
-          enum: ['section8_issue', 'section8_pr', 'accepted_report', 'by_design', 'duplicate'],
+        kind: str('Optional: tasks | goals | polls | digests | env | fences. Omit for a summary of counts per kind.', {
+          enum: ['tasks', 'goals', 'polls', 'digests', 'env', 'fences'],
         }),
-        ref: str('Short reference, e.g. "agave#14335" or "agave#14358".'),
-        url: str('Full URL to the issue/PR/advisory.'),
-        title: str('Title of the issue/PR.'),
-        quote: str('The incriminating line — the exact sentence that proves this class is already known/fixed/credited to someone else.'),
-        published_at: str('UTC timestamp the issue/PR/advisory was published. Compared against a finding\'s submitted_at to compute the §8 collision warning — get this exact.'),
-        merged_at: str('UTC timestamp the PR was merged, if applicable.'),
-        applies_to: { type: 'array', items: { type: 'string' }, description: 'Finding ids this fence excludes or forecloses, e.g. ["F15"].' },
-        paths: { type: 'array', items: { type: 'string' }, description: 'Repo file paths this fence covers, e.g. ["core/src/repair/block_id_repair_service.rs"]. Used to cross-check against files reviewers marked "clean".' },
-        note: str('Plain-English explanation of why this matters, e.g. "Published 5h25m BEFORE F15 was filed."'),
+        id: str('Optional record id to fetch a single entry within a kind, e.g. "T3", "G1", "P4", "D5", "FN2".'),
+        limit: { type: 'number', description: 'Maximum records to return, newest first. Default 50, max 500. Ignored for kind="env" (a single fact map, not a list) and when id is set.' },
       },
-      required: ['kind', 'ref'],
-    },
-  },
-  {
-    name: 'fences',
-    title: 'List all §8 prior-art fences and accepted-report exclusions',
-    description:
-      'Read every known prior-art exclusion and competitor-accepted report, newest first. Check this BEFORE filing any advisory and before marking any file "clean" in a review — a fence here means the class is already spoken for and a submission would be a wasted 0.5 SOL burn.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'related',
-    title: 'What else touches this?',
-    description:
-      'Traverse the shared brain around one thing — a file path, a finding id (F3), a task id (T7), a goal (G1) or an agent name. Returns everything connected to it and how: who reviewed that file, which findings name it, which tasks serve the same goal. Call this BEFORE opening a file or picking up a finding: it is the fastest way to inherit the context your partners already built instead of rediscovering it.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: str('What to look up: "votor/src/consensus_pool.rs", "F3", "T7", "G1", or an agent name.'),
-        hops: { type: 'number', description: 'How far to walk: 1 = direct connections (default), 2 = the second ring, which is where non-obvious links show up.' },
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'graph',
-    title: 'Read the shared brain as a graph',
-    description:
-      'Read the same connected graph shown in the web Graph tab, directly through MCP. It includes agents, their current and completed tasks, goals, findings, files, and the relationships between them. Use it when joining or choosing work so you inherit the structure the team already built. The interactive view is at /graph on this relay; append the same token already configured for this MCP connection.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        type: str('Optional node type: agent | goal | task | finding | file.', {
-          enum: ['agent', 'goal', 'task', 'finding', 'file'],
-        }),
-        status: str('Optional status filter: open | good | warn | bad | idle.'),
-        limit: { type: 'number', description: 'Maximum nodes to return, 1-100. Default 50.' },
-      },
-    },
-  },
-  {
-    name: 'digest',
-    title: 'Catch up without scrolling',
-    description:
-      'Get the rolling summary of what has been DECIDED — findings confirmed or rejected, tasks closed, files reviewed, who has gone quiet — rather than everything that was said. Call it when you return to a busy board instead of reading hundreds of messages. Generated automatically every 20 messages or 15 minutes.',
-    inputSchema: {
-      type: 'object',
-      properties: { last: { type: 'number', description: 'How many digests back to show. Default 3.' } },
     },
   },
   {
@@ -524,17 +329,13 @@ function renderBoard(board) {
   if (!currentAgents.length) lines.push('  (nobody is currently a member)');
   for (const a of currentAgents) {
     const mark = a.online ? '●' : '○';
-    const current = a.currentTasks || [];
-    const taken = a.tasksTaken || [];
-    const built = a.completedTasks || [];
-    lines.push(`  ${mark} ${a.name}${a.name === board.you ? ' (you)' : ''} — ${current.length ? current.map((task) => `${task.id} ${task.title}`).join('; ') : 'available (no current task)'}`);
-    lines.push(`      activity: ${a.status || 'idle'}  [seen ${a.lastSeenAgo}]`);
-    if (taken.length) lines.push(`      took: ${taken.join(', ')}${built.length ? `; built/completed: ${built.map((task) => task.id).join(', ')}` : ''}`);
+    lines.push(`  ${mark} ${a.name}${a.name === board.you ? ' (you)' : ''} — ${a.status || 'idle'}`);
+    lines.push(`      [seen ${a.lastSeenAgo}]`);
   }
   if (removedAgents.length) {
     lines.push('', `## Removed identities (${removedAgents.length})`);
     lines.push(`  ${removedAgents.map((a) => a.name).join(', ')}`);
-    lines.push('  (historical work remains attributed; they are not current partners or task owners)');
+    lines.push('  (historical work remains attributed; they are not current partners)');
   }
 
   const section = (label, list, render) => {
@@ -543,29 +344,6 @@ function renderBoard(board) {
     for (const item of list) lines.push(...render(item).map((l) => `  ${l}`));
   };
 
-  const envEntries = Object.entries(board.env || {});
-  if (envEntries.length) {
-    lines.push('## Shared environment');
-    for (const [key, entry] of envEntries) lines.push(`  ${key} = ${entry.value}`);
-  } else {
-    lines.push('## Shared environment', '  (not recorded — set repo and commit with env_set before real work)');
-  }
-
-  section('Goals', board.goals || [], (g) => [
-    `${g.id} [${g.status}] ${g.title}  —  ${g.done}/${g.taskCount} tasks done (${g.percent}%)`,
-    ...(g.detail ? [`    ${g.detail}`] : []),
-  ]);
-
-  section('Open tasks', board.tasks.open, (t) => [
-    `${t.id} ${t.title}${t.scope ? `  [${t.scope}]` : ''}${t.goal ? `  → ${t.goal}` : ''}`,
-    ...(t.notes ? [`    ${t.notes.split('\n')[0]}`] : []),
-  ]);
-  section('In progress', board.tasks.claimed, (t) => [`${t.id} ${t.title} — ${t.owner}`]);
-  if (board.tasks.blocked.length) section('Blocked', board.tasks.blocked, (t) => [`${t.id} ${t.title} — ${t.owner || 'unowned'}`]);
-  if (board.polls?.open?.length) section('Open polls', board.polls.open, (p) => [
-    `${p.id} ${p.question} — ${p.tally.yes} yes / ${p.tally.no} no / ${p.tally.abstain} abstain (${p.tally.cast}/${p.tally.eligible} cast)`,
-    ...(p.action ? [`    action: ${JSON.stringify(p.action)}`] : []),
-  ]);
   section('Findings', board.findings, (f) => [
     `${f.id} [${f.severity}/${f.status}] ${f.title}  (by ${f.by})`,
     ...(f.target ? [`    target: ${f.target}`] : []),
@@ -603,20 +381,6 @@ function renderInbox(messages, waited) {
     .join('\n\n');
 }
 
-function renderPoll(poll) {
-  const tally = poll.tally || { yes: 0, no: 0, abstain: 0, cast: 0, eligible: 0 };
-  const lines = [
-    `${poll.id} [${poll.status}] ${poll.question}`,
-    `  votes: ${tally.yes} yes / ${tally.no} no / ${tally.abstain} abstain; ${tally.cast}/${tally.eligible} cast; ${poll.requiredYes} yes required`,
-  ];
-  if (poll.reason) lines.push(`  reason: ${poll.reason}`);
-  if (poll.action) lines.push(`  action: ${JSON.stringify(poll.action)}`);
-  if (poll.execution) lines.push(`  execution: ${JSON.stringify(poll.execution)}`);
-  const missing = (poll.eligible || []).filter((name) => !poll.votes?.[name]);
-  if (poll.status === 'open' && missing.length) lines.push(`  waiting on: ${missing.join(', ')}`);
-  return lines.join('\n');
-}
-
 /**
  * What an agent reads the instant it joins. This is the only briefing it is
  * guaranteed to see, so it carries the whole working protocol — and it adapts
@@ -626,12 +390,7 @@ function renderPoll(poll) {
 function briefing(room, agent) {
   const board = room.board(agent);
   const peers = board.agents.filter((a) => a.name !== agent && a.membershipStatus !== 'kicked');
-  const online = peers.filter((a) => a.online);
-  const goals = board.goals.filter((g) => g.status === 'active');
-  const env = Object.entries(room.state.env || {});
-  const openTasks = board.tasks.open;
   const disputed = board.coverage.filter((f) => f.disagreement);
-  const openPolls = board.polls?.open || [];
 
   const L = [];
   L.push(`IDENTITY: You are exactly "${agent}" on the shared board "${board.room}".`);
@@ -648,55 +407,26 @@ function briefing(room, agent) {
   // --- what to do right now, derived from the actual state of the board
   L.push('## DO THESE NOW, IN ORDER');
   let step = 1;
-  if (!env.length) {
-    L.push(`${step++}. Nobody has recorded the shared environment. Set it with env_set: at minimum`);
-    L.push('   `repo` and `commit`, plus `build` if it compiles and `target` if there is a live host.');
-    L.push('   If two agents audit different commits, every finding you produce is worthless.');
-  } else {
-    L.push(`${step++}. Confirm your local checkout matches the shared environment below. If it does not,`);
-    L.push('   fix your checkout — do not change the shared value unless you agreed it with your partner.');
-  }
-  if (!goals.length) {
-    L.push(`${step++}. There are NO GOALS yet. This is your job before any auditing: propose one to three`);
-    L.push('   with goal_add, then `send` them to your partner and get agreement. Goals are what stop');
-    L.push('   two agents doing thorough work on things nobody needed.');
-  } else {
-    L.push(`${step++}. Read the ${goals.length} active goal(s) below. Everything you do links to one of them.`);
-  }
-  if (openTasks.length) {
-    L.push(`${step++}. ${openTasks.length} unclaimed task(s) are waiting. Call task_claim on one BEFORE you start it.`);
-  } else {
-    L.push(`${step++}. No unclaimed tasks. Break your scope into tasks with task_add (link them with goal:"G1"),`);
-    L.push('   then claim the ones you will do.');
-  }
   L.push(`${step++}. Call \`files\` before opening any file. If your partner already reviewed it, read their`);
   L.push('   note instead of redoing the work.');
   if (board.unreadForYou) L.push(`${step++}. You have ${board.unreadForYou} unread message(s) — call \`inbox\` first.`);
-  if (openPolls.length) L.push(`${step++}. ${openPolls.length} team poll(s) need a decision — call \`polls\`, then \`poll_vote\` after reading the reason and action.`);
   if (disputed.length) L.push(`${step++}. ${disputed.length} file(s) have conflicting verdicts. Resolving those beats starting anything new.`);
   L.push('');
 
   // --- the protocol, stated once, plainly
   L.push('## THE WORKING PROTOCOL');
-  L.push('GOALS  → what the engagement is for. goal_add / goals. Agree them with your partner.');
-  L.push('TASKS  → units of work under a goal. task_add(goal:"G1") → task_claim → task_update.');
-  L.push('         Agents have no static roles. Your current claimed task is your responsibility; your');
-  L.push('         completed task history is the durable record of what you built or investigated.');
-  L.push('         NEVER start work you have not claimed. If task_claim says your partner owns it,');
-  L.push('         pick something else — that is the collision guard doing its job.');
   L.push('FILES  → the coverage map. file_review every file when you finish reading it, INCLUDING');
   L.push('         clean ones: "I read it, it is fine" removes it from your partner\'s queue forever.');
   L.push('         Use verdict "partial" with a lines range if you only got through part of it.');
   L.push('FINDINGS → finding_add the moment you have evidence, not when it is polished. Your partner');
   L.push('         gets pinged to reproduce it independently and mark it confirmed or rejected.');
   L.push('         Nothing gets submitted on one agent\'s say-so.');
-  L.push('TALK   → status when you switch tasks. send for anything that changes what your partner');
-  L.push('         should do next. inbox(wait_seconds) when you are genuinely blocked on them.');
+  L.push('TALK   → status when you switch focus, one line. send for anything that changes what your');
+  L.push('         partner should do next. inbox(wait_seconds) when you are genuinely blocked on them.');
   L.push('MONITOR → call `monitor(wait_seconds:120)` after every work unit and at the end of each cycle.');
   L.push('          It keeps a live client listening; it cannot wake a client process that has exited.');
-  L.push('POLLS  → poll_create for shared decisions and stale-work reassignment; polls → poll_vote.');
-  L.push('         Do not silently steal work or erase an agent. A passed poll moves the claim while');
-  L.push('         preserving the previous agent\'s task history and completed contributions.');
+  L.push('ARCHIVE → tasks, goals, polls, digests, the shared environment, and §8 fences are retired —');
+  L.push('         read-only history now, in the `archive` tool. Check it if you need that context.');
   L.push('');
 
   L.push('## KEEP LISTENING WHILE YOU WORK — THIS IS NOT OPTIONAL');
@@ -704,32 +434,21 @@ function briefing(room, agent) {
   L.push('call a tool. An agent that goes quiet for an hour is deaf for an hour, and your partner is');
   L.push('sitting there assuming you got their message.');
   L.push('');
-  L.push('- Call `inbox` BETWEEN units of work — after each file you finish, before you claim the next');
-  L.push('  task, after a long build. Not just when you are about to stop. A lead that arrives 40');
-  L.push('  minutes into an audit is worthless if you read it 40 minutes later.');
+  L.push('- Call `inbox` BETWEEN units of work — after each file you finish, after a long build. Not');
+  L.push('  just when you are about to stop. A lead that arrives 40 minutes into an audit is worthless');
+  L.push('  if you read it 40 minutes later.');
   L.push('- When something arrives, ACT ON IT before continuing your own plan. If they flag a file you');
   L.push('  are about to open, stop and read their note. If they ask you to verify a finding, verify it.');
   L.push('  If they claim a surface you were heading for, pick something else and say so.');
   L.push('  Reading a message and carrying on regardless is worse than never receiving it — they now');
   L.push('  believe it was handled.');
-  L.push('- Always answer a direct question, even if the answer is "not yet, still on T3". Silence is');
+  L.push('- Always answer a direct question, even if the answer is "not yet, still looking". Silence is');
   L.push('  indistinguishable from disagreement.');
   L.push('- If you cannot proceed without them, do not spin: `inbox` with wait_seconds (up to 120)');
   L.push('  blocks until they reply and returns the moment mail lands.');
   L.push('- A Stop hook is your safety net: if you try to end a turn with unread mail it will wake you');
   L.push('  and hand it over. Treat that as the backstop that caught what you missed, not the plan.');
   L.push('');
-
-  if (env.length) {
-    L.push('## SHARED ENVIRONMENT');
-    for (const [key, entry] of env) L.push(`  ${key} = ${entry.value}   (set by ${entry.by})`);
-    L.push('');
-  }
-  if (goals.length) {
-    L.push('## ACTIVE GOALS');
-    for (const g of goals) L.push(`  ${g.id} ${g.title} — ${g.done}/${g.taskCount} tasks done`);
-    L.push('');
-  }
 
   L.push('## GROUND RULES');
   L.push('- Only test what the program authorizes. A lead outside declared scope becomes a `note`, not a task.');
@@ -757,7 +476,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
   }
   if (agent && !moderationTool) {
     room.touch(agent);
-    room.proposeInactiveKickPolls();
   }
 
   /**
@@ -771,21 +489,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
   const withNag = (result) => {
     if (moderationTool) return result;
     if (!result.content?.[0]) return result;
-    const currentWork = agent
-      ? room.state.tasks.filter((task) => task.owner === agent && ['claimed', 'blocked'].includes(task.status))
-      : [];
-    const openWork = room.state.tasks.filter((task) => task.status === 'open');
-    const openDecisions = room.listPolls('open').filter((poll) => poll.eligible.includes(agent) && !poll.votes?.[agent]);
-    if (!currentWork.length && openWork.length && !['task_claim', 'join'].includes(name)) {
-      result.content[0].text =
-        `[available] You have no current task and ${openWork.length} task(s) are open. Read board/inbox, then claim one now; ` +
-        'do not remain idle while teammates are offline.\n\n' + result.content[0].text;
-    }
-    if (openDecisions.length && !['polls', 'poll_vote', 'join'].includes(name)) {
-      result.content[0].text =
-        `[decision] Your vote is still needed on ${openDecisions.map((poll) => poll.id).join(', ')}. Call polls, read the reason/action, and vote.\n\n` +
-        result.content[0].text;
-    }
     if (needsMonitorUpdate && !['monitor', 'join'].includes(name)) {
       result.content[0].text = MONITOR_UPDATE + '\n\n' + result.content[0].text;
     }
@@ -807,8 +510,8 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
     result.content[0].text =
       '!! You have not read the operating briefing for this board.\n' +
       '   It was added after you joined, so you are working without the shared protocol.\n' +
-      '   Call the `join` tool now — one call, and it returns the environment, the goals,\n' +
-      '   the working rules, and what this board needs from you next. Do that before continuing.\n\n' +
+      '   Call the `join` tool now — one call, and it returns the working protocol, the ground\n' +
+      '   rules, and what this board needs from you next. Do that before continuing.\n\n' +
       result.content[0].text;
     return result;
   };
@@ -817,8 +520,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
   switch (name) {
     case 'board': {
       if (agent && room.state.agents[agent]) room.state.agents[agent].boardAt = Date.now();
-      room.releaseStaleClaims();
-      room.maybeDigest();
       return text(renderBoard(room.board(agent)));
     }
 
@@ -828,16 +529,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       if (room.state.agents[agent]) room.state.agents[agent].protocolSeen = MONITOR_PROTOCOL;
       if (room.state.agents[agent]) room.state.agents[agent].boardAt = Date.now();
       return text(`${briefing(room, agent)}${renderBoard(room.board(agent))}`);
-    }
-
-    case 'env_set': {
-      if (!args.key || !args.value) return fail('env_set requires "key" and "value".');
-      const result = room.setEnv(agent, args.key, args.value);
-      return text(
-        result.changed
-          ? `Changed ${result.key}: "${result.previous}" → "${result.value}". Everyone has been alerted.`
-          : `Set ${result.key} = ${result.value}`,
-      );
     }
 
     case 'status': {
@@ -898,68 +589,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       );
     }
 
-    case 'task_add': {
-      if (!args.title) return fail('task_add requires "title".');
-      if (args.goal && !room.state.goals.some((g) => g.id === args.goal)) {
-        return fail(`No goal ${args.goal}. Existing goals: ${room.state.goals.map((g) => g.id).join(', ') || '(none yet)'}`);
-      }
-      if (args.depends_on && !room.state.tasks.some((t) => t.id === args.depends_on)) {
-        return fail(`No task ${args.depends_on} to depend on.`);
-      }
-      if (args.assign_to) {
-        const target = room.state.agents[args.assign_to];
-        if (!target) return fail(`No agent named "${args.assign_to}".`);
-        if (room.isAgentBlocked(args.assign_to).blocked) return fail(`${args.assign_to} was removed and cannot receive work.`);
-        if (Date.now() - (target.lastSeen || 0) >= 90_000) {
-          return fail(`${args.assign_to} is inactive and cannot receive assigned work. Leave the task open or choose an active agent.`);
-        }
-      }
-      const task = room.addTask(agent, {
-        title: args.title,
-        scope: args.scope,
-        notes: args.notes,
-        assignTo: args.assign_to,
-        dependsOn: args.depends_on,
-      });
-      if (args.goal) {
-        task.goal = args.goal;
-        room.save();
-      }
-      return text(
-        `Added ${task.id}: ${task.title}${task.owner ? ` (assigned to ${task.owner})` : ' (open)'}` +
-          (args.goal ? ` → ${args.goal}` : '\nNo goal linked. If this serves a shared goal, add one with goal_add and link it.') +
-          (args.depends_on ? ` [depends on ${args.depends_on}]` : '')
-      );
-    }
-
-    case 'goal_add': {
-      if (!args.title) return fail('goal_add requires "title".');
-      const goal = room.addGoal(agent, { title: args.title, detail: args.detail });
-      room.send(agent, { to: 'all', text: `New shared goal ${goal.id}: ${goal.title}. Link your tasks to it with task_add goal="${goal.id}".` });
-      return text(`Added ${goal.id}: ${goal.title}`);
-    }
-
-    case 'goal_update': {
-      const result = room.updateGoal(agent, args.id, { status: args.status, detail: args.detail });
-      if (!result.ok) return fail(result.error);
-      return text(`${result.goal.id} is now ${result.goal.status}.`);
-    }
-
-    case 'goals': {
-      const list = room.goals();
-      if (!list.length) return text('No goals set yet. Agree one with your partner and call goal_add.');
-      return text(
-        list
-          .map(
-            (g) =>
-              `${g.id} [${g.status}] ${g.title}\n` +
-              `   progress: ${g.done}/${g.taskCount} tasks${g.owners.length ? ` — ${g.owners.join(', ')}` : ''}` +
-              (g.detail ? `\n   ${g.detail}` : ''),
-          )
-          .join('\n\n'),
-      );
-    }
-
     case 'file_review': {
       if (!args.path) return fail('file_review requires "path".');
       const { alsoReviewedBy, disagreement } = room.reviewFile(agent, args);
@@ -1008,75 +637,6 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
       );
     }
 
-    case 'task_claim': {
-      // Claiming without looking is how two agents end up on the same surface.
-      const record = room.state.agents[agent];
-      const sawBoard = Date.now() - (record?.boardAt || 0);
-      const unread = room.unread(agent).length;
-      if (unread) {
-        return fail(`You have ${unread} unread message(s). Read them with \`inbox\` first — one of them may already claim this or redirect you — then claim.`);
-      }
-      if (sawBoard > 5 * 60_000) {
-        return fail('Call `board` first (you have not looked in the last 5 minutes), then claim. The board is how you find out what your partners already took.');
-      }
-      const result = room.claimTask(agent, args.id);
-      if (!result.ok) return fail(result.error);
-      room.send(agent, { to: 'all', text: `${agent} claimed ${result.task.id}: ${result.task.title}. Send context or overlap warnings now, using reply_to when applicable.` });
-      return text(`You own ${result.task.id}: ${result.task.title}\n${result.task.notes || ''}`);
-    }
-
-    case 'task_update': {
-      const result = room.updateTask(agent, args.id, { status: args.status, notes: args.notes });
-      if (!result.ok) return fail(result.error);
-      if (args.status === 'done' || args.status === 'blocked') {
-        room.send(agent, {
-          to: 'all',
-          text: `${agent} marked ${result.task.id} ${result.task.status}: ${result.task.title}.${args.notes ? ` Outcome: ${args.notes}` : ' Ask for the outcome before duplicating this work.'}`,
-        });
-      }
-      return text(`${result.task.id} is now ${result.task.status}.`);
-    }
-
-    case 'poll_create': {
-      const actions = new Set(['task_reassign', 'task_release', 'agent_kick', 'agent_restore']);
-      if (args.action && !actions.has(args.action)) {
-        return fail(`Unknown poll action "${args.action}". Use task_reassign, task_release, agent_kick, or agent_restore.`);
-      }
-      let action = null;
-      if (args.action === 'task_reassign') action = { type: args.action, taskId: args.task_id, to: args.assign_to };
-      else if (args.action === 'task_release') action = { type: args.action, taskId: args.task_id };
-      else if (args.action === 'agent_kick' || args.action === 'agent_restore') action = { type: args.action, agent: args.agent };
-      const result = room.createPoll(agent, { question: args.question, reason: args.reason, action });
-      if (!result.ok) return fail(result.error);
-      room.send(agent, {
-        to: 'all',
-        urgent: Boolean(action),
-        text: `Vote needed on ${result.poll.id}: ${result.poll.question}${result.poll.reason ? ` — ${result.poll.reason}` : ''}${action ? ` Action: ${JSON.stringify(action)}.` : ''} Call polls, then poll_vote.`,
-      });
-      return text(renderPoll(result.poll));
-    }
-
-    case 'poll_vote': {
-      const result = room.votePoll(agent, args.id, args.choice);
-      if (!result.ok) return fail(result.error);
-      if (result.finalized) {
-        room.send(agent, {
-          to: 'all',
-          text: `${result.poll.id} ${result.poll.status}. ${result.poll.execution ? `Action result: ${JSON.stringify(result.poll.execution)}` : 'Decision recorded.'}`,
-        });
-      }
-      return text(renderPoll(result.poll));
-    }
-
-    case 'polls': {
-      if (args.id) {
-        const poll = room.poll(args.id);
-        return poll ? text(renderPoll(poll)) : fail(`No poll ${args.id}.`);
-      }
-      const list = room.listPolls(args.status || '');
-      return text(list.length ? list.map(renderPoll).join('\n\n') : `No ${args.status || ''} polls found.`.replace('  ', ' '));
-    }
-
     case 'finding_add': {
       if (!args.title) return fail('finding_add requires "title".');
       // A finding your partner cannot reproduce is not a finding, it is a rumour.
@@ -1089,7 +649,7 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
           'do that from a title.\n' +
           'evidence: what you observed that makes you believe it (file:line, the actual response, the code path).\n' +
           'repro: the minimal steps or request that shows it.\n' +
-          'If you only have a hunch, use task_add or note instead — those do not pretend to be findings.',
+          'If you only have a hunch, use note instead — that does not pretend to be a finding.',
         );
       }
       if (!args.target) {
@@ -1204,100 +764,33 @@ export async function callTool(room, agent, name, args = {}, host = null, { huma
     case 'advisories':
       return text(room.advisories().length ? room.advisories() : 'No advisories recorded yet.');
 
-    case 'fence_add': {
-      if (!args.kind) return fail('fence_add requires "kind".');
-      if (!args.ref) return fail('fence_add requires "ref".');
-      const fence = room.addFence(agent, {
-        kind: args.kind,
-        ref: args.ref,
-        url: args.url,
-        title: args.title,
-        quote: args.quote,
-        publishedAt: args.published_at,
-        mergedAt: args.merged_at,
-        appliesTo: args.applies_to,
-        paths: args.paths,
-        note: args.note,
-      });
-      room.send(agent, {
-        to: 'all',
-        text: `New fence ${fence.id} [${fence.kind}] ${fence.ref}${fence.appliesTo.length ? ` — forecloses ${fence.appliesTo.join(', ')}` : ''}${fence.paths.length ? ` — covers ${fence.paths.join(', ')}` : ''}. Check before filing or clearing those.`,
-      });
-      return text(fence);
-    }
-
-    case 'fences':
-      return text(room.fences().length ? room.fences() : 'No fences recorded yet.');
-
-    case 'related': {
-      if (!args.id) return fail('related requires "id" — a file path, finding id, task id, goal id or agent name.');
-      const hops = Math.min(Math.max(Number(args.hops) || 1, 1), 3);
-      const found = relatedTo(room.state, args.id, hops);
-      if (!found) return fail(`Nothing on the board matches "${args.id}". Try a file path, F/T/G id, or an agent name.`);
-      if (!found.neighbours.length) {
-        return text(`${found.start.type} ${found.start.label} — ${found.start.detail}\n\nNothing is connected to it yet. If you are working on it, that is worth fixing: claim a task, or record a file_review so your partners can see it.`);
+    case 'archive': {
+      const archive = room.state.archive || {};
+      const kinds = ['tasks', 'goals', 'polls', 'digests', 'env', 'fences'];
+      if (!args.kind) {
+        return text({
+          tasks: (archive.tasks || []).length,
+          goals: (archive.goals || []).length,
+          polls: (archive.polls || []).length,
+          digests: (archive.digests || []).length,
+          env: Object.keys(archive.env || {}).length,
+          fences: (archive.fences || []).length,
+        });
       }
-      const lines = [`${found.start.type} ${found.start.label} — ${found.start.detail}`, ''];
-      for (let d = 1; d <= hops; d += 1) {
-        const ring = found.neighbours.filter((n) => n.depth === d);
-        if (!ring.length) continue;
-        lines.push(`## ${d === 1 ? 'Directly connected' : `${d} hops away`} (${ring.length})`);
-        for (const n of ring) {
-          const how = found.edges.find((e) => e.from === n.id || e.to === n.id);
-          lines.push(`  ${n.type.padEnd(8)} ${n.label}${n.detail && n.detail !== n.label ? ` — ${n.detail.slice(0, 70)}` : ''}${how ? `  [${how.kind}]` : ''}`);
-        }
-        lines.push('');
+      if (!kinds.includes(args.kind)) {
+        return fail(`Unknown archive kind "${args.kind}". Use one of: ${kinds.join(', ')}.`);
       }
-      return text(lines.join('\n'));
-    }
-
-    case 'graph': {
-      const graph = buildGraph(room.state);
-      const allowedStatus = new Set(['open', 'good', 'warn', 'bad', 'idle']);
-      if (args.status && !allowedStatus.has(args.status)) {
-        return fail('graph status must be one of: open, good, warn, bad, idle.');
+      if (args.kind === 'env') {
+        return text(Object.keys(archive.env || {}).length ? archive.env : 'No archived environment facts.');
       }
-      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 100);
-      let nodes = graph.nodes;
-      if (args.type) nodes = nodes.filter((node) => node.type === args.type);
-      if (args.status) nodes = nodes.filter((node) => node.status === args.status);
-      nodes = nodes
-        .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))
-        .slice(0, limit);
-      const visible = new Set(nodes.map((node) => node.id));
-      const edges = graph.edges.filter((edge) => visible.has(edge.from) || visible.has(edge.to));
-      const counts = graph.nodes.reduce((acc, node) => {
-        acc[node.type] = (acc[node.type] || 0) + 1;
-        return acc;
-      }, {});
-      const lines = [
-        '# Shared brain graph',
-        `All nodes: ${Object.entries(counts).map(([kind, count]) => `${kind} ${count}`).join(' · ')} · edges ${graph.edges.length}`,
-        'Interactive view: open `/graph?token=<your already-configured token>` on the same relay origin.',
-        '',
-        `## Nodes (${nodes.length}${nodes.length < graph.nodes.length ? ` of ${graph.nodes.length}` : ''})`,
-      ];
-      for (const node of nodes) {
-        lines.push(`  ${node.id} [${node.status}] degree=${node.degree} — ${node.detail || node.label}`);
-        if (node.type === 'agent') {
-          const current = node.meta.currentTasks || [];
-          const built = node.meta.completed || [];
-          lines.push(`      current: ${current.join(', ') || 'none (available)'}; built/completed: ${built.map((task) => task.id).join(', ') || 'none recorded'}`);
-        }
+      const list = archive[args.kind] || [];
+      if (args.id) {
+        const found = list.find((item) => item.id === args.id);
+        return found ? text(found) : fail(`No ${args.kind} record ${args.id} in the archive.`);
       }
-      lines.push('', `## Relationships touching these nodes (${edges.length})`);
-      for (const edge of edges.slice(0, 150)) {
-        lines.push(`  ${edge.from} --${edge.kind}${edge.inferred ? ' (inferred)' : ''}--> ${edge.to}`);
-      }
-      if (edges.length > 150) lines.push(`  ... ${edges.length - 150} more; filter by type or call related on a node id.`);
-      return text(lines.join('\n'));
-    }
-
-    case 'digest': {
-      room.maybeDigest();
-      const list = room.state.digests.slice(-Number(args.last || 3));
-      if (!list.length) return text('No digests yet — they are generated every 20 messages or 15 minutes of activity.');
-      return text(list.map((d) => `## ${d.id}  ${d.ts.slice(11, 19)} UTC (messages ${d.fromSeq + 1}-${d.toSeq})\n` + d.lines.map((l) => `  - ${l}`).join('\n')).join('\n\n'));
+      if (!list.length) return text(`No archived ${args.kind}.`);
+      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 500);
+      return text([...list].reverse().slice(0, limit));
     }
 
     case 'note': {

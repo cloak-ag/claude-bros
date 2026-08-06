@@ -31,6 +31,8 @@ ${NAV_CSS}
   @media (max-width:560px)  { .grid { grid-template-columns:1fr; } }
   .grid.insights { grid-template-columns:minmax(0,1.15fr) minmax(0,.9fr) minmax(0,.85fr); }
   @media (max-width:800px) { .grid.insights { grid-template-columns:1fr; } }
+  .grid.pair { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  @media (max-width:800px) { .grid.pair { grid-template-columns:1fr; } }
 
   .pane { overflow-y:auto; overscroll-behavior:contain; flex:1 1 auto; min-height:0; padding-right:4px; }
   .pane::-webkit-scrollbar { width:9px; }
@@ -45,37 +47,10 @@ ${NAV_CSS}
   .empty { color:var(--muted); font-style:italic; font-size:13px; }
   .muted { color:var(--muted); font-size:12px; }
   .ink2 { color:var(--ink-2); }
-
-  /* Environment entries are long operational facts, not inline labels. Give
-     keys a stable column and values their own wrapping block so paths, commits,
-     and evidence never run into the key or stretch the dashboard. */
-  .env-list { display:grid; margin:0; }
-  .env-row { display:grid; grid-template-columns:minmax(140px,220px) minmax(0,1fr);
-             gap:18px; align-items:start; padding:10px 0; border-bottom:1px solid var(--line); }
-  .env-row:first-child { padding-top:2px; }
-  .env-row:last-child { padding-bottom:0; border-bottom:0; }
-  .env-key { min-width:0; color:var(--muted); font:600 12px/1.45 var(--mono);
-             overflow-wrap:anywhere; }
-  .env-value { min-width:0; color:var(--ink-2); font-size:13px; line-height:1.5;
-               white-space:pre-wrap; overflow-wrap:anywhere; }
-  /* Values span a 14-character repo slug to multi-sentence prose. Long ones
-     clamp behind an expander so one agent's build notes cannot push the rest of
-     the board off screen, and identifiers get mono while prose stays sans. */
-  .env-row { grid-template-columns:minmax(140px,220px) minmax(0,1fr) auto; }
-  .env-value.clamp .env-body { display:-webkit-box; -webkit-line-clamp:2;
-                               -webkit-box-orient:vertical; overflow:hidden; }
-  .env-value .atom { font-family:var(--mono); font-size:12.5px; color:var(--ink); }
-  .env-by { display:block; font-size:11px; color:var(--muted); margin-top:4px; white-space:normal; }
-  .env-more { align-self:start; background:none; border:1px solid var(--line); color:var(--muted);
-              border-radius:999px; font:11px var(--mono); padding:1px 8px; cursor:pointer; white-space:nowrap; }
-  .env-more:hover { color:var(--ink); border-color:var(--rule); }
-  .env-group { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
-               margin:16px 0 2px; padding-top:10px; border-top:1px solid var(--line); }
-  .env-group:first-child { margin-top:0; padding-top:0; border-top:0; }
-  @media (max-width:640px) {
-    .env-row { grid-template-columns:1fr auto; gap:3px; padding:11px 0; }
-    .env-key { color:var(--ink); grid-column:1/-1; }
-  }
+  /* Agents write their one-line status, but not everyone stays one line —
+     clamp it instead of letting a stray essay stretch the compact panel. */
+  .status-line { color:var(--ink-2); font-size:13px; overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; max-width:100%; }
 
   /* agent identity: colour ALWAYS beside the name, never alone */
   .who { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-weight:600; }
@@ -118,12 +93,8 @@ ${NAV_CSS}
   .message-action.delete:hover { color:var(--critical); border-color:var(--critical); }
   .message-deleted { color:var(--muted); font-style:italic; }
   .hb { font-variant-numeric:tabular-nums; }
-  .digest { border-left:2px solid var(--series-1); padding:2px 0 2px 12px; margin-bottom:12px; }
-  .digest b { font-family:var(--mono); font-size:12px; color:var(--series-1); }
-  .digest ul { margin:4px 0 0; padding-left:18px; }
-  .digest li { font-size:12.5px; color:var(--ink-2); margin-bottom:2px; }
 
-  /* Tasks and findings are work queues, so unresolved work is primary and
+  /* Findings are a work queue, so unresolved work is primary and
      historical records sit in a deliberately quieter, collapsed archive. */
   .queue-group + .queue-group, .queue-group + details, details + .queue-group { margin-top:18px; }
   .group-title { display:flex; align-items:center; gap:8px; margin:0 0 6px; color:var(--ink-2);
@@ -240,14 +211,11 @@ ${NAV_CSS}
     .burn-ledger { text-align:left; }
   }
 
-  /* Fences: Anza ground-truth that forecloses a class of finding — grouped by
-     kind, newest first, so a re-tread class is obvious before it burns 0.5 SOL. */
-  .fence-group + .fence-group { margin-top:18px; }
-  .fence-card { padding:11px 0; border-bottom:1px solid var(--line); }
-  .fence-card:last-child { border-bottom:0; }
+  /* fence-quote is still used by the false-negative cross-check below, which
+     is the one place a fence's incriminating quote still surfaces live —
+     fence_add/fences and the §8-fences panel that grouped them are retired. */
   .fence-quote { margin-top:6px; padding:8px 10px; border-left:2px solid var(--rule); color:var(--ink-2);
                  font-size:12.5px; font-style:italic; overflow-wrap:anywhere; }
-  .fence-applies { margin-top:6px; font-size:11.5px; color:var(--muted); overflow-wrap:anywhere; }
 
   /* False-negative cross-check: files a reviewer called clean, contradicted by
      a merged, credited report in the same path. */
@@ -334,18 +302,9 @@ ${NAV_CSS}
 <div class="wrap">
   <div class="stats" id="stats"></div>
 
-  <section><h2>Shared environment</h2><div class="env-list" id="env"></div></section>
-
-  <div class="grid">
-    <section><h2>Goals</h2><div class="pane" id="goals"></div></section>
+  <div class="grid pair">
     <section><h2>Agents — live heartbeat</h2><div class="pane" id="agents"></div></section>
-    <section><h2>Tasks</h2><div class="pane" id="tasks"></div></section>
-  </div>
-
-  <div class="grid insights">
     <section><h2>Findings</h2><div class="pane" id="findings"></div></section>
-    <section><h2>Polls — team decisions</h2><div class="pane" id="polls"></div></section>
-    <section><h2>Digest — what got decided</h2><div class="pane" id="digest"></div></section>
   </div>
 
   <section class="submissions-section">
@@ -366,12 +325,6 @@ ${NAV_CSS}
       <div class="burn-ledger" id="burn-ledger"></div>
     </div>
     <div class="advisory-grid" id="advisories"></div>
-  </section>
-
-  <section class="fences-section">
-    <h2>§8 fences &amp; taken classes</h2>
-    <p class="muted">Public prior-art disclosures and already-accepted competitor reports that foreclose a class of finding.</p>
-    <div class="pane" id="fences" style="max-height:420px;margin-top:10px"></div>
   </section>
 
   <section class="contradictions-section">
@@ -448,11 +401,6 @@ const markdown = (value) => {
   }
   if (code) out.push('<pre><code>' + codeLines.map(esc).join(String.fromCharCode(10)) + '</code></pre>');
   closeList(); return out.join('');
-};
-const fill = (node, items, render) => {
-  node.innerHTML = items.length
-    ? items.map((i) => '<div class="row">' + render(i) + '</div>').join('')
-    : '<div class="empty">nothing yet</div>';
 };
 // Times are pinned to UTC−3 rather than browser-local, so two people watching
 // this board from different machines always quote each other the same clock.
@@ -536,7 +484,6 @@ const applyCoverageFilter = () => {
   el('coverage-none').style.display = needle && rows.length && !visible ? 'block' : 'none';
 };
 el('coverage-filter').addEventListener('input', applyCoverageFilter);
-let taskArchiveOpen = false;
 let rejectedArchiveOpen = false;
 let agentArchiveOpen = false;
 let submissionById = new Map();
@@ -853,11 +800,8 @@ async function tick() {
 
   const counts = { active: 0, quiet: 0, offline: 0 };
   activeAgents.forEach((a) => { counts[liveness(a)] += 1; });
-  const tasks = s.tasks || [];
-  const goals = s.goals || [];
   const files = Object.values(s.files || {});
   const findings = s.findings || [];
-  const polls = s.polls || [];
   // Advisories/fences are the ground truth a plain finding.status never
   // learns: what Anza actually did with a filed report, and what prior-art
   // already forecloses a class of finding.
@@ -878,18 +822,6 @@ async function tick() {
   const needsWorkSubmissions = submissionModels.filter((model) => model.readiness === 'needs_work');
   const reportedSubmissions = submissionModels.filter((model) => model.readiness === 'submitted');
 
-  // ---- goals, with progress derived from the tasks pointed at them
-  const withProgress = goals.map((g) => {
-    const own = tasks.filter((t) => t.goal === g.id);
-    const done = own.filter((t) => t.status === 'done').length;
-    return Object.assign({}, g, { total: own.length, done, pct: own.length ? Math.round(done / own.length * 100) : 0 });
-  });
-  // Aggregate over tasks, not the mean of per-goal percentages — otherwise a
-  // one-task goal counts as much as a twenty-task one.
-  const linked = withProgress.reduce((a, g) => a + g.total, 0);
-  const linkedDone = withProgress.reduce((a, g) => a + g.done, 0);
-  const goalPct = linked ? Math.round(linkedDone / linked * 100) : 0;
-
   // ---- coverage
   const reviewed = files.filter((f) => (f.reviews || []).length);
   const peer = reviewed.filter((f) => f.reviews.length > 1);
@@ -902,10 +834,6 @@ async function tick() {
       + '<div class="l">agents up</div><div class="sub">' + esc(names.join(', ') || '—')
       + ' · ' + counts.quiet + ' quiet / ' + counts.offline + ' offline'
       + (removedAgents.length ? ' · ' + removedAgents.length + ' removed' : '') + '</div></div>',
-    '<div class="stat"><div class="n">' + goalPct + '%</div><div class="l">goal progress</div>'
-      + '<div class="meter"><i style="width:' + goalPct + '%"></i></div>'
-      + '<div class="sub">' + linkedDone + '/' + linked + ' linked tasks · '
-      + withProgress.filter((g) => g.status === 'active').length + ' active goal(s)</div></div>',
     '<div class="stat"><div class="n">' + reviewed.length + '</div><div class="l">files covered</div>'
       + '<div class="sub">' + peer.length + ' peer-reviewed'
       + (disputed.length ? ' · <b style="color:var(--critical)">' + disputed.length + ' disputed</b>' : '') + '</div></div>',
@@ -914,86 +842,20 @@ async function tick() {
       + (findings.filter((f) => f.status === 'rejected').length ? ' · ' + findings.filter((f) => f.status === 'rejected').length + ' rejected' : '') + '</div></div>',
     '<div class="stat"><div class="n">' + readySubmissions.length + '</div><div class="l">ready to submit</div>'
       + '<div class="sub">' + needsWorkSubmissions.length + ' need report work · ' + reportedSubmissions.length + ' submitted</div></div>',
-    '<div class="stat"><div class="n">' + tasks.filter((t) => t.status !== 'done').length + '</div><div class="l">tasks left</div>'
-      + '<div class="sub">' + tasks.filter((t) => t.status === 'claimed').length + ' in progress</div></div>',
   ].join('');
 
-  const env = Object.entries(s.env || {});
-  // The facts every agent must agree on come first, in a fixed order. Anything
-  // else an agent pinned is its own scratchpad and sorts below.
-  const ENV_CORE = ['repo', 'commit', 'build', 'run', 'target', 'window', 'scope_url'];
-  const envRank = (k) => {
-    const i = ENV_CORE.indexOf(String(k).toLowerCase());
-    return i === -1 ? ENV_CORE.length : i;
-  };
-  const envCore = env.filter(([k]) => envRank(k) < ENV_CORE.length)
-    .sort((a, b) => envRank(a[0]) - envRank(b[0]));
-  const envNotes = env.filter(([k]) => envRank(k) === ENV_CORE.length)
-    .sort((a, b) => a[0].localeCompare(b[0]));
-
-  const envRow = ([k, v]) => {
-    const val = String(v.value ?? '');
-    // No whitespace means an identifier — a SHA, a slug, a path — which reads
-    // better in mono. Prose does not.
-    const atomic = !/\s/.test(val) && val.length <= 80;
-    const long = val.length > 130;
-    return '<div class="env-row"><div class="env-key">' + esc(k) + '</div>'
-      + '<div class="env-value' + (long ? ' clamp' : '') + '">'
-      +   '<span class="env-body' + (atomic ? ' atom' : '') + '">' + esc(val) + '</span>'
-      +   (v.by ? '<span class="env-by">' + esc(v.by) + (v.ts ? ' · ' + esc(ago(v.ts)) : '') + '</span>' : '')
-      + '</div>'
-      + (long ? '<button class="env-more" type="button">more</button>' : '<span></span>')
-      + '</div>';
-  };
-
-  el('env').innerHTML = env.length
-    ? (envCore.length ? '<div class="env-group">pinned facts</div>' + envCore.map(envRow).join('') : '')
-      + (envNotes.length ? '<div class="env-group">agent notes (' + envNotes.length + ')</div>'
-          + envNotes.map(envRow).join('') : '')
-    : '<div class="empty">Not recorded. Agents should pin repo, commit and build with '
-      + '<code>env_set</code> — otherwise they may be auditing different code.</div>';
-
-  for (const btn of el('env').querySelectorAll('.env-more')) {
-    const box = btn.parentElement.querySelector('.env-value');
-    // Measure the clamped element while it is clamped: .env-value also carries
-    // the attribution line so it never overflows, and an unclamped inline span
-    // reports zero height. A character count alone would leave dead buttons.
-    const body = box.querySelector('.env-body');
-    if (body.scrollHeight <= body.clientHeight + 1) {
-      box.classList.remove('clamp');
-      btn.remove();
-      continue;
-    }
-    btn.onclick = () => { btn.textContent = box.classList.toggle('clamp') ? 'more' : 'less'; };
-  }
-
-  fill(el('goals'), withProgress, (g) =>
-    '<div style="display:flex;gap:10px;align-items:baseline"><code class="muted" style="white-space:nowrap">' + esc(g.id) + '</code>'
-    + '<b>' + esc(g.title) + '</b>'
-    + '<span class="muted" style="margin-left:auto;font-variant-numeric:tabular-nums">' + g.done + '/' + g.total + '</span></div>'
-    + '<div class="meter"><i style="width:' + g.pct + '%;background:' + (g.status === 'done' ? 'var(--good)' : 'var(--series-1)') + '"></i></div>'
-    + (g.detail ? '<div class="muted">' + esc(g.detail) + '</div>' : '')
-    + (g.status !== 'active' ? ' ' + pill(g.status === 'done' ? 'clean' : 'skipped', g.status) : ''));
-
-  // Agents pane: current members first; kicked identities are retained only as
-  // collapsed contribution history and do not inflate the live roster count.
+  // Agents pane: presence and a one-line status only — task ownership used to
+  // be folded in here, but tasks are retired (see the archive tool), and a
+  // compact roster is the point. Long free-text status lines are clamped to
+  // one line instead of letting a multi-paragraph essay stretch the panel.
   const agentRow = (a, removed = false) => {
     const st = liveness(a);
     const t = ms(a.lastSeen);
-    const current = tasks.filter((task) => task.owner === a.name && ['claimed', 'blocked'].includes(task.status));
-    const taken = tasks.filter((task) => (task.participants || []).includes(a.name)
-      || task.owner === a.name || task.lastOwner === a.name
-      || (task.history || []).some((entry) => entry.who === a.name && entry.what === 'claimed'));
-    const completed = taken.filter((task) => task.status === 'done');
     return who(a.name, removed ? 'offline' : st)
       + (removed ? ' ' + pill('skipped', 'removed') : '')
-      + '<div class="ink2" style="font-size:13px;margin-top:3px"><b>Current:</b> '
-      + (current.length ? current.map((task) => '<code>' + esc(task.id) + '</code> ' + esc(task.title)).join('; ') : 'available — no claimed task') + '</div>'
-      + '<div class="muted" style="margin-top:3px">Activity: ' + esc(a.status || 'idle') + '</div>'
+      + '<div class="status-line" style="margin-top:3px">' + esc(a.status || 'idle') + '</div>'
       + (a.client ? '<div class="muted">Client: ' + esc(a.client.title || a.client.name)
         + (a.client.version ? ' ' + esc(a.client.version) : '') + '</div>' : '')
-      + (taken.length ? '<div class="muted">Took ' + esc(taken.map((task) => task.id).join(', '))
-        + (completed.length ? ' · built/completed ' + esc(completed.map((task) => task.id).join(', ')) : '') + '</div>' : '')
       + '<div class="muted">' + pill(st, st === 'active' ? 'up' : st)
       + ' <span class="hb">last activity ' + hb(a) + '</span>'
       + (st === 'offline' && t ? ' · ' + onDay(t) + at(t) : '') + '</div>';
@@ -1006,31 +868,6 @@ async function tick() {
     + (removedAgents.length ? removedAgents.map((a) => '<div class="row">' + agentRow(a, true) + '</div>').join('') : empty('No removed identities.')) + '</details>';
   el('agents').querySelector('details.archive').addEventListener('toggle', (event) => {
     agentArchiveOpen = event.currentTarget.open;
-  });
-
-  const taskOrder = { claimed:0, blocked:1, open:2 };
-  const activeTasks = tasks.filter((t) => t.status !== 'done').sort((a, b) =>
-    (taskOrder[a.status] ?? 9) - (taskOrder[b.status] ?? 9)
-      || String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric:true }));
-  const completedTasks = tasks.filter((t) => t.status === 'done').sort((a, b) =>
-    String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
-      || String(b.id || '').localeCompare(String(a.id || ''), undefined, { numeric:true }));
-  const taskRow = (t) => '<div class="work-item">'
-    + '<div class="work-head"><code class="muted work-id">' + esc(t.id) + '</code>'
-    + '<div class="work-title">' + esc(t.title) + '</div></div>'
-    + '<div class="work-meta">'
-    + pill(t.status === 'done' ? 'clean' : t.status === 'blocked' ? 'suspicious' : t.status === 'claimed' ? 'active' : 'reviewed', t.status)
-    + (t.owner ? who(t.owner) : t.status === 'done' ? '' : '<span class="muted">unclaimed</span>')
-    + (t.goal ? '<code class="muted">goal ' + esc(t.goal) + '</code>' : '')
-    + (t.dependsOn ? '<code class="muted">depends on ' + esc(t.dependsOn) + '</code>' : '')
-    + '</div></div>';
-  el('tasks').innerHTML = '<div class="queue-group"><div class="group-title">Active queue <span class="count">'
-    + activeTasks.length + '</span></div>'
-    + (activeTasks.length ? activeTasks.map(taskRow).join('') : empty('No active tasks.')) + '</div>'
-    + '<details class="archive"' + (taskArchiveOpen ? ' open' : '') + '><summary>Completed <span class="count">' + completedTasks.length + '</span></summary>'
-    + (completedTasks.length ? completedTasks.map(taskRow).join('') : empty('No completed tasks.')) + '</details>';
-  el('tasks').querySelector('details.archive').addEventListener('toggle', (event) => {
-    taskArchiveOpen = event.currentTarget.open;
   });
 
   const SEV = { critical:0, high:1, medium:2, low:3, info:4 };
@@ -1148,40 +985,6 @@ async function tick() {
     el('burn-ledger').innerHTML = '<b>' + esc(solFmt(totalSol)) + ' SOL burned</b> · ' + parts.map(esc).join(' · ');
   }
 
-  // ---- §8 fences & taken classes, grouped by kind, newest first
-  const FENCE_KIND_LABEL = {
-    section8_issue: '§8 — public issue', section8_pr: '§8 — public PR',
-    accepted_report: 'Accepted competitor report', by_design: 'By design', duplicate: 'Duplicate',
-  };
-  const FENCE_KIND_ORDER = ['section8_issue', 'section8_pr', 'accepted_report', 'by_design', 'duplicate'];
-  const fenceCard = (fence) => {
-    const when = fence.publishedAt || fence.mergedAt;
-    return '<div class="fence-card">'
-      + '<div class="work-head"><code class="muted work-id">' + esc(fence.id) + '</code>'
-      + '<div class="work-title">' + (fence.url
-          ? '<a href="' + esc(fence.url) + '" target="_blank" rel="noreferrer noopener">' + esc(fence.ref || fence.title || fence.id) + '</a>'
-          : esc(fence.ref || fence.title || fence.id)) + '</div></div>'
-      + (fence.title && fence.ref ? '<div class="muted" style="margin-top:3px">' + esc(fence.title) + '</div>' : '')
-      + (fence.quote ? '<div class="fence-quote">“' + esc(fence.quote) + '”</div>' : '')
-      + '<div class="fence-applies">' + (when ? esc(onDay(when) + at(when)) + ' UTC−3' : '')
-      + (fence.appliesTo && fence.appliesTo.length ? (when ? ' · ' : '') + 'applies to ' + esc(fence.appliesTo.join(', ')) : '')
-      + (fence.paths && fence.paths.length ? (when || (fence.appliesTo && fence.appliesTo.length) ? ' · ' : '') + esc(fence.paths.join(', ')) : '')
-      + '</div>'
-      + (fence.note ? '<div class="muted" style="margin-top:5px">' + esc(fence.note) + '</div>' : '')
-      + '</div>';
-  };
-  const fenceGroups = new Map();
-  fences.forEach((fn) => { const k = fn.kind || 'section8_issue'; if (!fenceGroups.has(k)) fenceGroups.set(k, []); fenceGroups.get(k).push(fn); });
-  const orderedFenceKinds = [...fenceGroups.keys()].sort((a, b) => {
-    const ia = FENCE_KIND_ORDER.indexOf(a), ib = FENCE_KIND_ORDER.indexOf(b);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-  });
-  el('fences').innerHTML = fences.length
-    ? orderedFenceKinds.map((k) => '<div class="fence-group"><div class="group-title">' + esc(FENCE_KIND_LABEL[k] || k)
-        + ' <span class="count">' + fenceGroups.get(k).length + '</span></div>'
-        + fenceGroups.get(k).map(fenceCard).join('') + '</div>').join('')
-    : empty('No fences recorded yet.');
-
   // ---- false-negative cross-check: files cleared by review, contradicted by
   // a merged, credited competitor report in the same path.
   const acceptedFences = fences.filter((fn) => fn.kind === 'accepted_report');
@@ -1202,29 +1005,6 @@ async function tick() {
         + (c.fence.quote ? '<div class="fence-quote">“' + esc(c.fence.quote) + '”</div>' : '')
         + '</div>').join('')
     : empty('No contradictions — cleared files are holding.');
-
-  const pollRow = (p) => {
-    const votes = Object.values(p.votes || {}).map((vote) => vote.choice);
-    const yes = votes.filter((choice) => choice === 'yes').length;
-    const no = votes.filter((choice) => choice === 'no').length;
-    const abstain = votes.filter((choice) => choice === 'abstain').length;
-    return '<div class="work-item"><div class="work-head"><code class="muted work-id">' + esc(p.id) + '</code>'
-      + '<div class="work-title">' + esc(p.question) + '</div></div><div class="work-meta">'
-      + pill(p.status === 'passed' ? 'clean' : p.status === 'rejected' ? 'skipped' : 'partial', p.status)
-      + (p.systemManaged ? pill('reviewed', 'automatic inactivity review') : '')
-      + '<span class="muted">' + yes + ' yes · ' + no + ' no · ' + abstain + ' abstain · '
-      + votes.length + '/' + (p.eligible || []).length + ' cast</span></div>'
-      + (p.reason ? '<div class="ink2" style="margin-top:7px">' + esc(p.reason) + '</div>' : '')
-      + (p.action ? '<div class="muted" style="margin-top:5px">Action: <code>' + esc(JSON.stringify(p.action)) + '</code></div>' : '')
-      + (p.execution ? '<div class="muted" style="margin-top:5px">Result: <code>' + esc(JSON.stringify(p.execution)) + '</code></div>' : '')
-      + '</div>';
-  };
-  const openPolls = polls.filter((p) => p.status === 'open');
-  const decidedPolls = polls.filter((p) => p.status !== 'open').slice().reverse();
-  el('polls').innerHTML = '<div class="queue-group"><div class="group-title">Needs votes <span class="count">'
-    + openPolls.length + '</span></div>' + (openPolls.length ? openPolls.map(pollRow).join('') : empty('No open polls.')) + '</div>'
-    + '<details class="archive"><summary>Decided <span class="count">' + decidedPolls.length + '</span></summary>'
-    + (decidedPolls.length ? decidedPolls.map(pollRow).join('') : empty('No decisions yet.')) + '</details>';
 
   // ---- the coverage table: who has actually read what, and did they agree
   const reviewTime = (f) => {
@@ -1253,14 +1033,6 @@ async function tick() {
         }).join('')
     : '<div class="empty">No files recorded yet — agents log them with the <code>file_review</code> tool.</div>';
   applyCoverageFilter();
-
-  // ---- Digest pane (from main)
-  const digests = [...(s.digests || [])].reverse();
-  el('digest').innerHTML = digests.length
-    ? digests.slice(0, 4).map((d) => '<div class="digest"><b>' + esc(d.id) + '</b> '
-        + '<span class="muted">' + esc(at(d.ts)) + ' · ' + esc(ago(d.ts)) + '</span>'
-        + '<ul>' + d.lines.map((l) => '<li>' + esc(l) + '</li>').join('') + '</ul></div>').join('')
-    : '<div class="empty">No digest yet — one is written every 20 messages or 15 minutes of activity.</div>';
 
   // ---- Messages pane with thread grouping (our improvement)
   const msgRow = (m) => '<code class="muted" style="font-size:11px">' + esc(m.id) + '</code> '

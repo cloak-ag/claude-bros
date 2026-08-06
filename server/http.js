@@ -16,16 +16,15 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26'];
 const SERVER_INFO = { name: 'claude-bros', title: 'Claude Bros', version: '0.4.0' };
 const COLLABORATION_PROTOCOL = {
-  version: '2026-08-03',
+  version: '2026-08-06',
   changes: [
+    'task_add/task_claim/task_update, goal_add/goal_update/goals, poll_create/poll_vote/polls, env_set, digest, fence_add/fences, related, and graph are retired: the goal/task/poll ceremony carried little of the value agents actually produced. Every record either system ever created is preserved, not deleted, under the read-only archive tool (kind: tasks | goals | polls | digests | env | fences).',
+    'The automatic inactivity-kick poll and stale-claim-lapse timers are gone with it; a kicked/blocked identity from before this change stays blocked, but nothing can kick or restore one going forward.',
     'The monitor tool is the standard heartbeat: it reads mail, optionally long-polls for 120 seconds, and must be called between work units; it cannot create a model turn after a client exits.',
     'The relay is client-agnostic: Claude, Codex, Grok, and other Streamable HTTP MCP clients receive the same identity and operating contract.',
-    'The relationship graph is available through the graph tool, bros://board/graph MCP resource, and related neighborhood queries.',
-    'Static roles are deprecated; current claimed tasks and status describe present work, while task/file/finding history records contributions.',
-    'Agents should check inbox between work units, acknowledge direct requests, and explicitly hand off work before a takeover.',
-    'poll_create, poll_vote, and polls coordinate contested task takeovers and membership decisions.',
+    'Static roles are deprecated; status describes present work, while file/finding history records contributions.',
+    'Agents should check inbox between work units, acknowledge direct requests, and hand off leads with send.',
     'Confirmed findings become blocked submission candidates; submission_update records Anza fields and gates, and only complete candidates are ready.',
-    'After sustained inactivity the relay opens a deduplicated agent_kick poll for active teammates to decide; it never auto-passes removal.',
     'A separate human moderation credential exposes message_edit and message_delete; ordinary agent credentials cannot see or call them.',
   ],
 };
@@ -173,25 +172,20 @@ async function handleRpc(room, agent, message, host = null, human = false) {
           'what this board needs next — do not start work before reading it.\n\n' +
           `CAPABILITY BRIEF ${COLLABORATION_PROTOCOL.version}: inspect tools/list at session start; the relay may ` +
           'gain tools without changing your identity. Read MCP resource `bros://server/capabilities` for the ' +
-          'current discovery map and changelog. Call `graph`, read `bros://board/graph`, or call `related` to understand ' +
-          'goal → task → agent → file → finding relationships before duplicating work.\n\n' +
-          'IDENTITY IS NOT A STATIC ROLE: describe current work with a claimed task and `status`. Past tasks, ' +
-          'file reviews, and findings are your contribution history. Do not treat legacy role/scope labels as ' +
-          'permanent ownership. Free agents should offer help, review hand-offs, and take released work.\n\n' +
+          'current discovery map and changelog. The goal/task/poll ceremony (env_set, goal_add, task_add/task_claim, ' +
+          'poll_create/poll_vote, digest, fence_add, graph, related) is retired — every record either ever produced ' +
+          'is preserved, read-only, in the `archive` tool.\n\n' +
+          'IDENTITY IS NOT A STATIC ROLE: describe current work with `status`, one line. File reviews and findings ' +
+          'are your contribution history. Do not treat legacy role/scope labels as permanent ownership.\n\n' +
           'The protocol in one line each:\n' +
-          '- env_set: agree repo/commit/build before anything, or you may be auditing different code.\n' +
-          '- goal_add / goals: agree what the engagement is for.\n' +
-          '- task_add(goal) → task_claim → task_update: never start work you have not claimed.\n' +
           '- files / file_review: check coverage before opening a file; record every file you finish, clean ones included.\n' +
           '- finding_add: log evidence immediately; your partner reproduces and confirms it.\n' +
           '- status / send / inbox: say what you are doing, hand off leads, block on your partner when you must.\n\n' +
-          'COORDINATE CHANGES: acknowledge direct asks; include task/finding/file IDs in replies; send a concise ' +
-          'handoff with result, evidence, remaining work, and next owner. For a contested takeover or membership ' +
-          'decision, use `poll_create`, `poll_vote`, and `polls`; never improvise a vote in status text.\n\n' +
+          'COORDINATE CHANGES: acknowledge direct asks; include finding/file IDs in replies; send a concise ' +
+          'handoff with result, evidence, and remaining work.\n\n' +
           'KEEP LISTENING: this relay cannot interrupt you. Call `inbox` between units of work — after each ' +
-          'file, before each new task — not only when you are about to stop, and act on what arrives before ' +
-          'continuing your own plan. A Stop hook will wake you if you try to finish with unread mail, but that ' +
-          'is a safety net, not the plan.',
+          'file, not only when you are about to stop, and act on what arrives before continuing your own plan. ' +
+          'A Stop hook will wake you if you try to finish with unread mail, but that is a safety net, not the plan.',
       });
     }
 
@@ -221,7 +215,7 @@ async function handleRpc(room, agent, message, host = null, human = false) {
         {
           uri: 'bros://board/graph',
           name: 'Current board relationship graph',
-          description: 'Goals, tasks, agents, files, and findings with their recorded and inferred relationships.',
+          description: 'Agents, files, and findings with their recorded and inferred relationships. Goal/task nodes are gone with the retired task system — see the archive tool for that history.',
           mimeType: 'application/json',
         },
         {
@@ -368,12 +362,6 @@ export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_
       });
     }
 
-    // Lapsed claims should read as lapsed wherever people glance — the dashboard
-    // state read is the most common glance and it never calls the board tool.
-    // Release on every authenticated request (cheap, idempotent, O(tasks)).
-    room.releaseStaleClaims();
-    room.proposeInactiveKickPolls();
-
     // ------------------------------------------------------------ MCP
     if (url.pathname === '/mcp') {
       // Browser-based MCP clients send Origin. Accept same-origin traffic and
@@ -456,7 +444,11 @@ export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_
         ...room.state,
         submissions: room.submissions(),
         advisories: room.advisories(),
+        // fences/env are archived (state.archive.*), but the Submissions/Advisories/
+        // Findings collision banners, the false-negative cross-check, and the
+        // submission modal's "current commit" comparison all still need them live.
         fences: room.fences(),
+        env: room.state.archive?.env || {},
       }, room.version, 'state');
     }
     if (url.pathname === '/api/auth') return json(res, 200, { human: isHuman });
@@ -465,8 +457,7 @@ export function createServer({ room, token, humanToken = process.env.BROS_HUMAN_
       if (!agent) return json(res, 400, { error: 'agent required' });
       // Peek only — the agent itself must call the inbox tool to consume mail.
       const pending = room.unread(agent).map(({ readBy, ...m }) => m);
-      const mine = room.state.tasks.filter((t) => t.owner === agent && t.status === 'claimed');
-      return json(res, 200, { count: pending.length, messages: pending, claimedByYou: mine.length });
+      return json(res, 200, { count: pending.length, messages: pending });
     }
 
     // Every tool over plain HTTP too. MCP tools only load at session start, so
